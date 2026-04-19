@@ -1,0 +1,22 @@
+{
+  "name": "finlink",
+  "private": true,
+  "version": "0.1.0",
+  "description": "FinLink — full-stack Plaid clone (sandbox)",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev:backend": "pnpm --filter @finlink/backend dev",
+    "dev:dashboard": "pnpm --filter @finlink/dashboard dev",
+    "dev:link-ui": "pnpm --filter @finlink/link-ui dev",
+    "dev": "pnpm -r --parallel --filter=!@finlink/shared run dev",
+    "build": "pnpm -r run build",
+    "test": "pnpm --filter @finlink/backend test",
+    "seed": "pnpm --filter @finlink/backend run seed",
+    "prisma:migrate": "pnpm --filter @finlink/backend run prisma:migrate",
+    "prisma:generate": "pnpm --filter @finlink/backend run prisma:generate",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

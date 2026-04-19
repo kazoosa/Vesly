@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background-color: #0a0e1a;
+  color: #e2e8f0;
+  font-family: "Inter", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-num {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.card {
+  @apply bg-bg-raised rounded-xl border border-border-subtle shadow-card;
+}
+.card-hover {
+  @apply card hover:bg-bg-hover transition;
+}
+.btn {
+  @apply inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition;
+}
+.btn-primary {
+  @apply btn bg-accent-green text-bg-base hover:bg-emerald-400;
+}
+.btn-ghost {
+  @apply btn text-slate-300 hover:bg-bg-hover hover:text-white;
+}
+.btn-danger {
+  @apply btn bg-rose-950 text-rose-300 hover:bg-rose-900 border border-rose-900;
+}
+.input {
+  @apply w-full rounded-lg border border-border-strong bg-bg-overlay px-3 py-2 text-sm text-slate-100 outline-none focus:border-accent-green focus:ring-2 focus:ring-accent-green/20 placeholder:text-slate-500;
+}
+.table {
+  @apply w-full text-sm;
+}
+.table th {
+  @apply text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider py-2 px-3 border-b border-border-subtle;
+}
+.table td {
+  @apply py-3 px-3 border-b border-border-subtle/50;
+}
+.table tr:hover td {
+  @apply bg-bg-hover/40;
+}
+.badge {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium font-num;
+}
+.badge-gray { @apply badge bg-slate-800 text-slate-300; }
+.badge-green { @apply badge bg-emerald-950 text-emerald-400 border border-emerald-900/50; }
+.badge-red { @apply badge bg-rose-950 text-rose-400 border border-rose-900/50; }
+.badge-amber { @apply badge bg-amber-950 text-amber-400 border border-amber-900/50; }
+.badge-blue { @apply badge bg-sky-950 text-sky-400 border border-sky-900/50; }
+.badge-purple { @apply badge bg-purple-950 text-purple-400 border border-purple-900/50; }
+
+.pos { color: #10b981; }
+.neg { color: #ef4444; }
+
+/* Thin scrollbars that reserve their own space so they never cover content */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  transition: background 0.15s;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.4); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* Reserve scrollbar space on the page and on any scrollable container —
+   ensures the bar never floats over the last column of a table or the right
+   edge of a legend. */
+html, body {
+  scrollbar-gutter: stable;
+}
+[class*="overflow-y-auto"],
+[class*="overflow-auto"],
+[class*="overflow-x-auto"] {
+  scrollbar-gutter: stable;
+}

@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: finlink
+      POSTGRES_PASSWORD: finlink
+      POSTGRES_DB: finlink
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finlink -d finlink"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  postgres-test:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: finlink
+      POSTGRES_PASSWORD: finlink
+      POSTGRES_DB: finlink_test
+    ports:
+      - "5433:5432"
+    profiles: ["test"]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://finlink:finlink@postgres:5432/finlink
+      REDIS_URL: redis://redis:6379
+      CORS_ORIGINS: http://localhost:5174,http://localhost:5175
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    ports:
+      - "5174:80"
+    depends_on:
+      - backend
+
+  link-ui:
+    build:
+      context: .
+      dockerfile: apps/link-ui/Dockerfile
+    ports:
+      - "5175:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:

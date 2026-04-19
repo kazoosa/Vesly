@@ -1,0 +1,352 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────
+
+enum Environment {
+  sandbox
+  development
+  production
+}
+
+enum ItemStatus {
+  GOOD
+  LOGIN_REQUIRED
+  ERROR
+}
+
+enum AccountType {
+  depository
+  credit
+  investment
+  loan
+}
+
+enum WebhookStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+enum LinkSessionStatus {
+  INIT
+  INSTITUTION_SELECTED
+  CREDENTIALS_SUBMITTED
+  MFA_PENDING
+  ACCOUNTS_SELECTED
+  CONSENT_GRANTED
+  COMPLETED
+  ABANDONED
+}
+
+// ─── DEVELOPER + APPLICATIONS ────────────────────────────────────────────
+
+model Developer {
+  id                   String        @id @default(cuid())
+  email                String        @unique
+  name                 String
+  passwordHash         String
+  snaptradeUserId      String?       @unique
+  snaptradeUserSecret  String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  applications         Application[]
+}
+
+model Application {
+  id               String             @id @default(cuid())
+  developerId      String
+  developer        Developer          @relation(fields: [developerId], references: [id], onDelete: Cascade)
+  name             String
+  description      String             @default("")
+  clientId         String             @unique
+  clientSecretHash String
+  webhookUrl       String?
+  redirectUris     String[]           @default([])
+  allowedProducts  String[]           @default([])
+  environment      Environment        @default(sandbox)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  items            Item[]
+  webhookEvents    WebhookEvent[]
+  apiLogs          ApiLog[]
+  linkSessions    LinkSession[]
+
+  @@index([developerId])
+}
+
+// ─── INSTITUTIONS ─────────────────────────────────────────────────────────
+
+model Institution {
+  id                  String   @id // e.g. ins_1
+  name                String
+  logoUrl             String?
+  primaryColor        String
+  supportedProducts   String[] @default([])
+  routingNumbers      String[] @default([])
+  country             String   @default("US")
+  items               Item[]
+  linkSessions        LinkSession[]
+
+  @@index([name])
+}
+
+// ─── ITEMS ────────────────────────────────────────────────────────────────
+
+model Item {
+  id                      String     @id @default(cuid())
+  applicationId           String
+  application             Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  institutionId           String
+  institution             Institution @relation(fields: [institutionId], references: [id])
+  clientUserId            String
+  accessTokenHash         String     @unique
+  snaptradeConnectionId   String?    @unique
+  status                  ItemStatus @default(GOOD)
+  consentExpiresAt   DateTime?
+  webhookUrl         String?
+  products           String[]   @default([])
+  lastSyncCursor     String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  accounts           Account[]
+  webhookEvents      WebhookEvent[]
+  identity           Identity?
+  income             IncomeVerification?
+  transactionTombstones TransactionTombstone[]
+
+  @@index([applicationId])
+  @@index([institutionId])
+}
+
+// ─── ACCOUNTS ─────────────────────────────────────────────────────────────
+
+model Account {
+  id                   String   @id @default(cuid())
+  itemId               String
+  item                 Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  snaptradeAccountId   String?  @unique
+  name                 String
+  officialName         String?
+  mask                 String
+  type            String
+  subtype         String
+  currentBalance  Float
+  availableBalance Float?
+  limitBalance    Float?
+  isoCurrencyCode String   @default("USD")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  transactions        Transaction[]
+  holdings            InvestmentHolding[]
+  investmentTransactions InvestmentTransaction[]
+
+  @@index([itemId])
+}
+
+// ─── TRANSACTIONS ─────────────────────────────────────────────────────────
+
+model Transaction {
+  id                String   @id @default(cuid())
+  accountId         String
+  account           Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  amount            Float
+  isoCurrencyCode   String   @default("USD")
+  date              DateTime
+  authorizedDate    DateTime?
+  name              String
+  merchantName      String?
+  categoryPrimary   String
+  categoryDetailed  String
+  categoryId        String?
+  pending           Boolean  @default(false)
+  paymentChannel    String   @default("other")
+  addressLine       String?
+  city              String?
+  region            String?
+  postalCode        String?
+  country           String?
+  lat               Float?
+  lon               Float?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([accountId, date])
+  @@index([date])
+}
+
+model TransactionTombstone {
+  id            String   @id @default(cuid())
+  itemId        String
+  item          Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  transactionId String
+  removedAt     DateTime @default(now())
+
+  @@index([itemId, removedAt])
+}
+
+// ─── INVESTMENTS ──────────────────────────────────────────────────────────
+
+model Security {
+  id                String   @id @default(cuid())
+  tickerSymbol      String   @unique
+  name              String
+  type              String
+  closePrice        Float
+  closePriceAsOf    DateTime
+  isin              String?
+  cusip             String?
+  exchange          String?
+  isoCurrencyCode   String   @default("USD")
+
+  holdings          InvestmentHolding[]
+  investmentTransactions InvestmentTransaction[]
+}
+
+model InvestmentHolding {
+  id                     String   @id @default(cuid())
+  accountId              String
+  account                Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  securityId             String
+  security               Security @relation(fields: [securityId], references: [id])
+  quantity               Float
+  institutionPrice       Float
+  institutionPriceAsOf   DateTime
+  institutionValue       Float
+  costBasis              Float
+  isoCurrencyCode        String   @default("USD")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([accountId, securityId])
+  @@index([accountId])
+}
+
+model InvestmentTransaction {
+  id                String   @id @default(cuid())
+  accountId         String
+  account           Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  securityId        String
+  security          Security @relation(fields: [securityId], references: [id])
+  snaptradeOrderId  String?  @unique
+  date              DateTime
+  name              String
+  type              String
+  quantity          Float
+  price             Float
+  amount            Float
+  fees              Float    @default(0)
+  isoCurrencyCode   String   @default("USD")
+  createdAt         DateTime @default(now())
+
+  @@index([accountId, date])
+}
+
+// ─── IDENTITY + INCOME ────────────────────────────────────────────────────
+
+model Identity {
+  id              String   @id @default(cuid())
+  itemId          String   @unique
+  item            Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  names           String[]
+  emails          String[]
+  phones          String[]
+  addressLine     String
+  addressCity     String
+  addressRegion   String
+  addressPostal   String
+  addressCountry  String   @default("US")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model IncomeVerification {
+  id                     String   @id @default(cuid())
+  itemId                 String   @unique
+  item                   Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  employerName           String
+  payFrequency           String
+  projectedYearlyIncome  Float
+  ytdGrossIncome         Float
+  payStubs               Json
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+// ─── WEBHOOKS + LOGS ──────────────────────────────────────────────────────
+
+model WebhookEvent {
+  id             String        @id @default(cuid())
+  applicationId  String
+  application    Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  itemId         String?
+  item           Item?         @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  webhookType    String
+  webhookCode    String
+  payload        Json
+  url            String?
+  status         WebhookStatus @default(PENDING)
+  attempts       Int           @default(0)
+  lastResponse   Json?
+  deliveredAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([applicationId, createdAt])
+  @@index([itemId])
+}
+
+model ApiLog {
+  id             String     @id @default(cuid())
+  applicationId  String?
+  application    Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  itemId         String?
+  method         String
+  path           String
+  statusCode     Int
+  latencyMs      Int
+  requestId      String
+  createdAt      DateTime   @default(now())
+
+  @@index([applicationId, createdAt])
+  @@index([createdAt])
+}
+
+// ─── LINK SESSIONS ────────────────────────────────────────────────────────
+
+model LinkSession {
+  id                 String            @id @default(cuid())
+  applicationId      String
+  application        Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  linkTokenJti       String            @unique
+  clientUserId       String
+  products           String[]          @default([])
+  clientName         String
+  webhookUrl         String?
+  redirectUri        String?
+  institutionId      String?
+  institution        Institution?      @relation(fields: [institutionId], references: [id])
+  status             LinkSessionStatus @default(INIT)
+  mfaRequired        Boolean           @default(false)
+  mfaSatisfied       Boolean           @default(false)
+  credentialAttempts Int               @default(0)
+  selectedAccountIds String[]          @default([])
+  publicTokenJti     String?           @unique
+  publicTokenConsumed Boolean          @default(false)
+  itemId             String?
+  expiresAt          DateTime
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([applicationId])
+  @@index([expiresAt])
+}
