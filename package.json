@@ -17,6 +17,6 @@
     "typecheck": "pnpm -r run typecheck"
   },
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   }
 }
