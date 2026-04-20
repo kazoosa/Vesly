@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd ../.. && pnpm --filter @finlink/shared build && pnpm --filter @finlink/link-ui build",
   "outputDirectory": "dist",
-  "installCommand": "cd ../.. && pnpm install --frozen-lockfile=false",
+  "installCommand": "cd ../.. && corepack enable && pnpm install --frozen-lockfile=false",
   "framework": null,
   "headers": [
     {
