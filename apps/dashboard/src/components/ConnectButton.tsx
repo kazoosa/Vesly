@@ -40,7 +40,7 @@ export function ConnectButton() {
     }
     const s = document.createElement("script");
     // Cache-bust so a stale SDK (from a prior build) can't linger
-    s.src = `${LINK_UI_URL}/dist/sdk/finlink.js?v=${Date.now()}`;
+    s.src = `${LINK_UI_URL}/sdk/finlink.js?v=${Date.now()}`;
     s.dataset.finlinkSdk = "1";
     s.onload = () => setSdkReady(true);
     document.body.appendChild(s);
