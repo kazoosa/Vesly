@@ -19,7 +19,33 @@ export function AllocationPage() {
     queryFn: () => f<AllocResp>("/api/portfolio/allocation"),
   });
 
-  if (!q.data) return null;
+  if (q.isLoading) {
+    return <div className="text-sm text-slate-500">Loading…</div>;
+  }
+
+  const empty =
+    !q.data ||
+    q.data.total_value === 0 ||
+    (q.data.by_ticker.length === 0 &&
+      q.data.by_institution.length === 0 &&
+      q.data.by_type.length === 0);
+
+  if (empty) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl font-semibold text-white">Allocation</h1>
+        </div>
+        <div className="card p-10 text-center">
+          <div className="text-5xl mb-4">◐</div>
+          <h2 className="text-lg font-semibold text-white mb-2">No allocation data yet</h2>
+          <p className="text-sm text-slate-400 max-w-md mx-auto">
+            Connect a brokerage to see how your portfolio is split across securities, brokerages, and asset classes.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -71,6 +97,9 @@ function DonutCard({
               paddingAngle={2}
               stroke="#0a0e1a"
               strokeWidth={2}
+              animationBegin={0}
+              animationDuration={400}
+              isAnimationActive={true}
             >
               {data.map((d, i) => (
                 <Cell key={i} fill={d.color} />

@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import clsx from "clsx";
 import { useAuth } from "../lib/auth";
 import { ConnectButton } from "./ConnectButton";
+import { APP_NAME } from "../lib/brand";
 
 const NAV = [
   { to: "/", label: "Overview", icon: "○" },
@@ -23,8 +24,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
             $
           </span>
           <div className="flex flex-col leading-tight">
-            <span className="font-semibold text-sm text-white">All Accounts</span>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">Stocks</span>
+            <span className="font-semibold text-sm text-white">{APP_NAME}</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider">Portfolio</span>
           </div>
         </div>
         <nav className="flex-1 py-3">

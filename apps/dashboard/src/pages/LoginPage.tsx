@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { APP_NAME } from "../lib/brand";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -32,8 +33,8 @@ export function LoginPage() {
             $
           </span>
           <div className="flex flex-col leading-tight">
-            <span className="font-semibold text-white">All Accounts</span>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">Stocks</span>
+            <span className="font-semibold text-white">{APP_NAME}</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider">Portfolio</span>
           </div>
         </div>
         <h1 className="text-xl font-semibold text-white mb-1">Sign in</h1>

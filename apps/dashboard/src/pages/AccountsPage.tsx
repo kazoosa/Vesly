@@ -3,6 +3,8 @@ import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd } from "../components/money";
 
+const DEMO_EMAIL = "demo@finlink.dev";
+
 interface Account {
   id: string;
   name: string;
@@ -16,9 +18,10 @@ interface Account {
 }
 
 export function AccountsPage() {
-  const { accessToken } = useAuth();
+  const { accessToken, developer } = useAuth();
   const f = apiFetch(() => accessToken);
   const qc = useQueryClient();
+  const isDemo = developer?.email === DEMO_EMAIL;
 
   const q = useQuery({
     queryKey: ["accounts"],
@@ -63,16 +66,18 @@ export function AccountsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            className="btn-ghost text-xs text-slate-500"
-            onClick={() => {
-              if (confirm("Clear all sample / mock brokerages? (Real SnapTrade connections are kept.)"))
-                wipeMock.mutate();
-            }}
-            disabled={wipeMock.isPending}
-          >
-            {wipeMock.isPending ? "Clearing…" : "Clear sample data"}
-          </button>
+          {isDemo && (
+            <button
+              className="btn-ghost text-xs text-slate-500"
+              onClick={() => {
+                if (confirm("Clear all sample / mock brokerages? (Real SnapTrade connections are kept.)"))
+                  wipeMock.mutate();
+              }}
+              disabled={wipeMock.isPending}
+            >
+              {wipeMock.isPending ? "Clearing…" : "Clear sample data"}
+            </button>
+          )}
           <button
             className="btn-ghost text-xs"
             onClick={() => refresh.mutate()}

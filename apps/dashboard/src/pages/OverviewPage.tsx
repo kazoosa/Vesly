@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd, fmtPct, PlText } from "../components/money";
@@ -61,17 +61,11 @@ interface DivResp {
 export function OverviewPage() {
   const { accessToken } = useAuth();
   const f = apiFetch(() => accessToken);
-  const qc = useQueryClient();
 
   const summary = useQuery({ queryKey: ["summary"], queryFn: () => f<Summary>("/api/portfolio/summary") });
   const holdings = useQuery({ queryKey: ["holdings"], queryFn: () => f<HoldingsResp>("/api/portfolio/holdings") });
   const tx = useQuery({ queryKey: ["tx", "all"], queryFn: () => f<TxResp>("/api/portfolio/transactions?count=10") });
   const divs = useQuery({ queryKey: ["dividends"], queryFn: () => f<DivResp>("/api/portfolio/dividends") });
-
-  const seedMock = useMutation({
-    mutationFn: () => f("/api/portfolio/seed-demo", { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries(),
-  });
 
   const s = summary.data;
   const empty = s && s.connected_count === 0;
@@ -114,19 +108,10 @@ export function OverviewPage() {
           <div className="text-5xl mb-4">📈</div>
           <h2 className="text-xl font-semibold text-white mb-2">Start your portfolio</h2>
           <p className="text-sm text-slate-400 max-w-md mx-auto mb-5">
-            Connect a real brokerage via the sidebar — or load a sample portfolio to explore the app first.
+            Use the <span className="text-white font-medium">+ Connect brokerage</span> button in the sidebar to link your first account.
           </p>
-          <div className="flex items-center justify-center gap-3">
-            <button
-              className="btn-primary"
-              onClick={() => seedMock.mutate()}
-              disabled={seedMock.isPending}
-            >
-              {seedMock.isPending ? "Loading…" : "Load sample portfolio"}
-            </button>
-          </div>
           <p className="text-[10px] text-slate-500 mt-4">
-            Sample data = 4 mock brokerages (Fidelity, Schwab, Robinhood, Chase) with ~30 holdings and 12mo of dividends.
+            Your data syncs automatically once connected. Supports Fidelity, Schwab, Robinhood, Vanguard, and 30+ others.
           </p>
         </div>
       )}
