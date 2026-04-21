@@ -21,7 +21,21 @@ type ServiceData = {
 };
 
 const AUTH_KEY = "beacon_ops_auth";
+const THEME_KEY = "beacon_ops_theme";
 const REFRESH_MS = 30_000;
+
+function getInitialTheme(): "light" | "dark" {
+  if (typeof window === "undefined") return "dark";
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+function applyTheme(theme: "light" | "dark") {
+  document.documentElement.classList.toggle("dark", theme === "dark");
+}
 
 export function App() {
   const [password, setPassword] = useState<string>(
@@ -36,6 +50,16 @@ export function App() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">(() => getInitialTheme());
+
+  useEffect(() => {
+    applyTheme(theme);
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  }
 
   const fetchOps = useCallback(async () => {
     if (!password) return;
@@ -144,6 +168,14 @@ export function App() {
               Updated {fmtRelative(lastFetched)}
             </span>
           )}
+          <button
+            className="icon-btn"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? <Icon.Sun /> : <Icon.Moon />}
+          </button>
           <button className="icon-btn" onClick={fetchOps} disabled={loading} title="Refresh">
             <Icon.RefreshCw className={loading ? "spin" : ""} />
           </button>
