@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useTheme } from "../lib/theme";
+import { useReveal } from "../lib/useReveal";
 import { APP_NAME } from "../lib/brand";
 import { BeaconMark } from "../components/BeaconMark";
 import { IconSun, IconMoon } from "../components/Icon";
@@ -84,9 +85,8 @@ function Hero() {
           Free forever for 1 brokerage
         </div>
         <h1 className="landing-hero-title">
-          Every brokerage.
-          <br />
-          <span className="gradient-text">One dashboard.</span>
+          Every brokerage.<br />
+          <em>One dashboard.</em>
         </h1>
         <p className="landing-hero-sub">
           Beacon pulls your holdings, transactions, and dividends from Robinhood, Interactive Brokers,
@@ -268,15 +268,17 @@ function Features() {
           title="Everything you expect. Plus the parts everyone else missed."
           sub="Beacon does what Mint, Personal Capital, and Snowball promised — and a few things they never figured out."
         />
-        <div className="feature-grid">
-          {features.map((f, i) => (
-            <div key={i} className="feature-card">
-              <div className="feature-icon">{f.icon}</div>
-              <h3 className="feature-title">{f.title}</h3>
-              <p className="feature-body">{f.body}</p>
-            </div>
-          ))}
-        </div>
+        <Reveal>
+          <div className="feature-grid reveal-stagger">
+            {features.map((f, i) => (
+              <div key={i} className="feature-card">
+                <div className="feature-icon">{f.icon}</div>
+                <h3 className="feature-title">{f.title}</h3>
+                <p className="feature-body">{f.body}</p>
+              </div>
+            ))}
+          </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -358,15 +360,17 @@ function HowItWorks() {
           title="From zero to full portfolio view in under 5 minutes."
           sub="No lengthy setup. No account verification. No hidden steps."
         />
-        <div className="howitworks-grid">
-          {steps.map((s, i) => (
-            <div key={i} className="howitworks-card">
-              <div className="howitworks-num">{s.n}</div>
-              <h3 className="howitworks-title">{s.title}</h3>
-              <p className="howitworks-body">{s.body}</p>
-            </div>
-          ))}
-        </div>
+        <Reveal>
+          <div className="howitworks-grid reveal-stagger">
+            {steps.map((s, i) => (
+              <div key={i} className="howitworks-card">
+                <div className="howitworks-num">{s.n}</div>
+                <h3 className="howitworks-title">{s.title}</h3>
+                <p className="howitworks-body">{s.body}</p>
+              </div>
+            ))}
+          </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -449,6 +453,7 @@ function Pricing() {
           title="Start free. Upgrade when you outgrow it."
           sub="No surprise fees. Cancel anytime. Every paid plan has a 14-day refund window."
         />
+        <Reveal className="pricing-grid-wrap">
         <div className="pricing-grid">
           {tiers.map((t) => (
             <div
@@ -500,6 +505,7 @@ function Pricing() {
             </div>
           ))}
         </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -714,11 +720,22 @@ function SectionHeader({
   sub?: string;
   align?: "left";
 }) {
+  const ref = useReveal<HTMLDivElement>();
   return (
-    <div className={`section-header ${align === "left" ? "align-left" : ""}`}>
+    <div ref={ref} className={`section-header reveal ${align === "left" ? "align-left" : ""}`}>
       {eyebrow && <div className="section-eyebrow">{eyebrow}</div>}
       <h2 className="section-title">{title}</h2>
       {sub && <p className="section-sub">{sub}</p>}
+    </div>
+  );
+}
+
+/** Wraps a block so it slides-up into view when scrolled to. */
+function Reveal({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  const ref = useReveal<HTMLDivElement>();
+  return (
+    <div ref={ref} className={`reveal ${className}`}>
+      {children}
     </div>
   );
 }

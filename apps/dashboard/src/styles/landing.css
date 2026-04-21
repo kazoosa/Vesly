@@ -248,12 +248,14 @@ html.dark .landing-btn-primary:hover {
   margin-bottom: 24px;
 }
 
-.gradient-text {
-  background: linear-gradient(120deg, #7c6aff 0%, #5b8def 50%, #34d399 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+/* Hero headline second line — a serif italic at the same size creates
+   emphasis through typographic contrast, not gradient fill. */
+.landing-hero-title em {
+  font-style: italic;
+  font-weight: 500;
+  font-family: "EB Garamond", "Adobe Garamond Pro", Georgia, serif;
+  letter-spacing: -0.02em;
+  color: rgb(var(--fg-primary));
 }
 
 .landing-hero-sub {
