@@ -168,7 +168,7 @@ function AppearanceSection() {
               onClick={() => setTheme(o.value)}
               className={`rounded-lg px-3 py-3 text-left transition-all ${
                 active
-                  ? "bg-bg-overlay ring-2 ring-accent-brand/50"
+                  ? "bg-bg-overlay ring-2 ring-fg-primary/50"
                   : "bg-bg-inset hover:bg-bg-hover"
               }`}
             >

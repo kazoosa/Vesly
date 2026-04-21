@@ -38,8 +38,7 @@ export function AllocationPage() {
           <h1 className="text-xl font-semibold text-fg-primary">Allocation</h1>
         </div>
         <div className="card p-10 text-center">
-          <div className="text-5xl mb-4">◐</div>
-          <h2 className="text-lg font-semibold text-fg-primary mb-2">No allocation data yet</h2>
+          <h2 className="text-fg-primary mb-2">No allocation data yet</h2>
           <p className="text-sm text-fg-secondary max-w-md mx-auto">
             Connect a brokerage to see how your portfolio is split across securities, brokerages, and asset classes.
           </p>

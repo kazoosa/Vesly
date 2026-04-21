@@ -109,7 +109,7 @@ export function HoldingsPage() {
                       <div className="flex items-center justify-end gap-2">
                         <div className="w-12 h-1 bg-bg-overlay rounded-full overflow-hidden">
                           <div
-                            className="h-full bg-accent-green"
+                            className="h-full bg-fg-primary"
                             style={{ width: `${Math.min(100, h.weight_pct * 2)}%` }}
                           />
                         </div>

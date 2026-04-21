@@ -30,8 +30,7 @@ export function DividendsPage() {
       <div className="space-y-6">
         <h1 className="text-xl font-semibold text-fg-primary">Dividends</h1>
         <div className="card p-10 text-center">
-          <div className="text-5xl mb-4">◈</div>
-          <h2 className="text-lg font-semibold text-fg-primary mb-2">No dividend income yet</h2>
+          <h2 className="text-fg-primary mb-2">No dividend income yet</h2>
           <p className="text-sm text-fg-secondary max-w-md mx-auto">
             Once your connected brokerages pay out dividends or interest, you'll see them here with monthly breakdowns and top payers.
           </p>
@@ -99,7 +98,7 @@ export function DividendsPage() {
                 </div>
                 <div className="flex-1 max-w-[240px] h-2 bg-bg-overlay rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-accent-green"
+                    className="h-full bg-fg-primary"
                     style={{ width: `${Math.max(4, pct)}%` }}
                   />
                 </div>

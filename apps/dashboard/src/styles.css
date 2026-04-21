@@ -3,27 +3,42 @@
 @tailwind utilities;
 
 /* ============================================================
-   Theme tokens — flip via .dark class on <html>
-   Values are "r g b" triplets (space-separated) so Tailwind's
-   <alpha-value> placeholder works for opacity modifiers.
+   Beacon — monochrome theme tokens
+   Flip via .dark class on <html>.
+   Values are "r g b" triplets so Tailwind's <alpha-value> works.
+   See beacon-design-system/project/colors_and_type.css for the
+   source of truth — these must stay in sync.
    ============================================================ */
 
 :root {
-  /* Light theme (Stripe-ish: warm white, soft gray surfaces) */
-  --bg-base: 250 250 252;        /* #FAFAFC */
-  --bg-raised: 255 255 255;      /* #FFFFFF */
-  --bg-overlay: 245 246 250;     /* #F5F6FA */
-  --bg-hover: 239 241 246;       /* #EFF1F6 */
-  --bg-inset: 243 244 249;       /* #F3F4F9 */
+  /* Surfaces — warm white page, pure white cards */
+  --bg-base:     250 250 252;   /* #FAFAFC */
+  --bg-raised:   255 255 255;   /* #FFFFFF */
+  --bg-overlay:  245 246 250;   /* #F5F6FA */
+  --bg-hover:    239 241 246;   /* #EFF1F6 */
+  --bg-inset:    243 244 249;   /* #F3F4F9 */
 
-  --border-subtle: 226 228 236;  /* #E2E4EC */
-  --border-strong: 203 207 219;  /* #CBCFDB */
+  --border-subtle: 226 228 236; /* #E2E4EC */
+  --border-strong: 203 207 219; /* #CBCFDB */
 
-  --fg-primary: 17 17 27;        /* near-black */
-  --fg-secondary: 68 72 90;      /* body text */
-  --fg-muted: 113 119 138;       /* labels */
-  --fg-fainter: 156 163 182;     /* hints */
+  --fg-primary:  17 17 27;      /* #11111B  headings */
+  --fg-secondary: 68 72 90;     /* #44485A  body */
+  --fg-muted:    113 119 138;   /* #71778A  labels */
+  --fg-fainter:  156 163 182;   /* #9CA3B6  hints */
 
+  /* Brand — monochrome deep ink */
+  --brand:       17  20  26;    /* #14141A */
+
+  /* P/L */
+  --pl-pos: #059669;
+  --pl-neg: #DC2626;
+
+  /* Data-series (charts only, never UI chrome) */
+  --accent-amber: 245 158  11;
+  --accent-blue:   56 189 248;
+  --accent-slate: 100 116 139;
+
+  /* Shadows — layered hairline + soft + offset */
   --shadow-card:
     0 0 0 1px rgba(17, 17, 27, 0.04),
     0 1px 2px rgba(17, 17, 27, 0.04),
@@ -35,29 +50,35 @@
 }
 
 .dark {
-  /* Dark theme (sophisticated, not pure black) */
-  --bg-base: 11 11 18;           /* #0B0B12 */
-  --bg-raised: 20 20 29;         /* #14141D */
-  --bg-overlay: 28 28 40;        /* #1C1C28 */
-  --bg-hover: 34 34 47;          /* #22222F */
-  --bg-inset: 15 15 24;          /* #0F0F18 */
+  /* Deep cool ink — near-black with a teal bias */
+  --bg-base:     8  13  18;     /* #080D12 */
+  --bg-raised:  15  22  28;     /* #0F161C */
+  --bg-overlay: 22  30  38;     /* #161E26 */
+  --bg-hover:   30  40  50;     /* #1E2832 */
+  --bg-inset:   11  17  22;     /* #0B1116 */
 
-  --border-subtle: 38 38 52;     /* subtle outline */
-  --border-strong: 58 58 76;
+  --border-subtle: 31  44  56;  /* #1F2C38 */
+  --border-strong: 54  74  92;  /* #364A5C */
 
-  --fg-primary: 245 247 252;     /* near-white */
-  --fg-secondary: 196 202 218;   /* body text */
-  --fg-muted: 134 142 162;       /* labels */
-  --fg-fainter: 90 96 112;       /* hints */
+  --fg-primary:  236 242 246;   /* #ECF2F6 */
+  --fg-secondary: 179 194 206;  /* #B3C2CE */
+  --fg-muted:    130 148 164;   /* #8294A4 */
+  --fg-fainter:   85 101 118;   /* #556576 */
+
+  /* Brand inverts to near-white in dark */
+  --brand:       236 242 246;
+
+  --pl-pos: #34D399;
+  --pl-neg: #F87171;
 
   --shadow-card:
     0 0 0 1px rgba(255, 255, 255, 0.04),
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 12px 32px -12px rgba(0, 0, 0, 0.6);
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 12px 32px -12px rgba(0, 0, 0, 0.7);
   --shadow-card-hover:
-    0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 20px 48px -16px rgba(0, 0, 0, 0.75);
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset,
+    0 20px 48px -16px rgba(0, 0, 0, 0.8);
 }
 
 /* ============================================================
@@ -68,7 +89,7 @@ html,
 body {
   background-color: rgb(var(--bg-base));
   color: rgb(var(--fg-secondary));
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -80,15 +101,34 @@ body {
   line-height: 1.5;
 }
 
-h1, h2, h3 {
+/* Type scale — per design brief */
+h1 { font-size: 28px; line-height: 1.15; font-weight: 600; letter-spacing: -0.025em; color: rgb(var(--fg-primary)); }
+h2 { font-size: 20px; line-height: 1.2;  font-weight: 600; letter-spacing: -0.02em;  color: rgb(var(--fg-primary)); }
+h3 { font-size: 14px; line-height: 1.3;  font-weight: 600; letter-spacing: -0.01em;  color: rgb(var(--fg-primary)); }
+
+.font-num {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.t-display {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 40px;
+  line-height: 1.05;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   color: rgb(var(--fg-primary));
 }
 
-.font-num {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+.t-label {
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgb(var(--fg-muted));
 }
 
 /* ============================================================
@@ -98,23 +138,25 @@ h1, h2, h3 {
 .card {
   @apply bg-bg-raised rounded-xl shadow-card relative;
 }
-
 .card-hover {
   @apply card transition-all duration-200 hover:shadow-card-hover;
 }
 
-/* Buttons */
+/* Buttons — monochrome */
 .btn {
   @apply inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
 }
 
 .btn-primary {
-  @apply btn text-white shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_0_0_1px_rgba(124,106,255,0.4),0_4px_16px_-4px_rgba(124,106,255,0.45)] hover:-translate-y-px hover:shadow-[0_1px_0_rgba(255,255,255,0.2)_inset,0_0_0_1px_rgba(124,106,255,0.6),0_6px_20px_-4px_rgba(124,106,255,0.6)];
-  background: linear-gradient(180deg, #8b5cf6 0%, #7c6aff 100%);
+  background: rgb(var(--brand));
+  color: rgb(var(--bg-raised));
+  border: 1px solid rgb(var(--brand));
 }
-.btn-primary:hover {
-  background: linear-gradient(180deg, #9f75ff 0%, #8575ff 100%);
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.3);
 }
+.dark .btn-primary { color: rgb(var(--bg-base)); }
 
 .btn-secondary {
   @apply btn bg-bg-overlay text-fg-primary border border-border-subtle hover:bg-bg-hover hover:border-border-strong;
@@ -125,13 +167,25 @@ h1, h2, h3 {
 }
 
 .btn-danger {
-  @apply btn text-rose-500 dark:text-rose-300 border border-rose-300 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/40;
+  @apply btn text-rose-600 border border-rose-200 bg-rose-50 hover:bg-rose-100;
+}
+.dark .btn-danger {
+  color: #f87171;
+  border-color: rgba(136, 19, 55, 0.6);
+  background: rgba(76, 5, 25, 0.4);
+}
+.dark .btn-danger:hover {
+  background: rgba(136, 19, 55, 0.4);
 }
 
 /* Inputs */
 .input {
   @apply w-full rounded-lg bg-bg-inset border border-border-subtle px-3.5 py-2.5 text-sm text-fg-primary placeholder:text-fg-fainter outline-none transition-all duration-150;
-  @apply focus:border-accent-brand/60 focus:ring-4 focus:ring-accent-brand/10 focus:bg-bg-raised;
+}
+.input:focus {
+  border-color: rgb(var(--fg-primary));
+  background: rgb(var(--bg-raised));
+  box-shadow: 0 0 0 4px rgb(var(--fg-primary) / 0.08);
 }
 
 /* Tables */
@@ -139,47 +193,39 @@ h1, h2, h3 {
   @apply w-full text-sm;
 }
 .table th {
-  @apply text-left text-[10px] font-semibold text-fg-muted uppercase tracking-wider py-3 px-4;
+  @apply text-left font-semibold text-fg-muted uppercase tracking-wider py-3 px-4;
+  font-size: 10px;
+  letter-spacing: 0.08em;
   border-bottom: 1px solid rgb(var(--border-subtle));
 }
 .table td {
   @apply py-3.5 px-4 text-fg-secondary;
   border-bottom: 1px solid rgb(var(--border-subtle) / 0.6);
 }
-.table tbody tr:last-child td {
-  border-bottom: none;
-}
-.table tbody tr {
-  @apply transition-colors duration-100;
-}
-.table tbody tr:hover td {
-  background: rgb(var(--bg-hover) / 0.6);
-}
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr { @apply transition-colors duration-100; }
+.table tbody tr:hover td { background: rgb(var(--bg-hover) / 0.6); }
 
-/* Badges */
+/* Badges — tinted, tabular-num */
 .badge {
-  @apply inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold font-num uppercase tracking-wider;
+  @apply inline-flex items-center px-2 py-0.5 rounded-md font-semibold font-num uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
 }
-.badge-gray   { @apply badge bg-slate-200 text-slate-700 dark:bg-slate-800/80 dark:text-slate-300; }
-.badge-green  { @apply badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300; }
-.badge-red    { @apply badge bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300; }
-.badge-amber  { @apply badge bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300; }
-.badge-blue   { @apply badge bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300; }
-.badge-purple { @apply badge bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300; }
+.badge-gray   { background: rgb(var(--accent-slate) / 0.15); color: rgb(var(--accent-slate)); }
+.badge-green  { background: rgba(16, 185, 129, 0.15);       color: var(--pl-pos); }
+.badge-red    { background: rgba(239, 68, 68, 0.15);        color: var(--pl-neg); }
+.badge-amber  { background: rgba(245, 158, 11, 0.15);       color: #F59E0B; }
+.badge-blue   { background: rgba(56, 189, 248, 0.15);       color: #38BDF8; }
+.badge-purple { background: rgb(var(--accent-slate) / 0.15); color: rgb(var(--accent-slate)); }
 
-/* Semantic P/L colors — same in both modes for money convention */
-.pos { color: #059669; }
-.dark .pos { color: #34d399; }
-.neg { color: #dc2626; }
-.dark .neg { color: #f87171; }
+/* P/L semantic colors */
+.pos { color: var(--pl-pos); }
+.neg { color: var(--pl-neg); }
 
-/* Brand text (gradient fill) */
+/* Brand text — plain, monochrome */
 .brand-text {
-  background: linear-gradient(135deg, #8b5cf6 0%, #5b8def 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  color: rgb(var(--fg-primary));
 }
 
 /* Divider */
@@ -190,7 +236,7 @@ h1, h2, h3 {
 }
 
 /* ============================================================
-   Scrollbars — subtle, stable (never floats over content)
+   Scrollbars — subtle, stable
    ============================================================ */
 
 * {
@@ -217,7 +263,7 @@ html, body { scrollbar-gutter: stable; }
    ============================================================ */
 
 *:focus-visible {
-  outline: 2px solid rgba(124, 106, 255, 0.5);
+  outline: 2px solid rgb(var(--fg-primary));
   outline-offset: 2px;
 }
 
@@ -228,3 +274,15 @@ html, body { scrollbar-gutter: stable; }
 .kbd {
   @apply inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[10px] font-mono rounded border border-border-subtle bg-bg-inset text-fg-muted;
 }
+
+/* Page entry animations */
+@keyframes beacon-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes beacon-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in  { animation: beacon-fade-in  0.3s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.animate-slide-up { animation: beacon-slide-up 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { APP_NAME } from "../lib/brand";
+import { BeaconMark } from "../components/BeaconMark";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -29,11 +30,8 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center p-4 bg-bg-base">
       <form onSubmit={submit} className="card w-full max-w-sm p-8">
         <div className="flex items-center gap-2 mb-8">
-          <span
-            className="w-8 h-8 rounded-lg inline-flex items-center justify-center text-white text-sm font-bold shadow-[0_0_0_1px_rgba(255,255,255,0.1)_inset,0_4px_12px_-4px_rgba(124,106,255,0.5)]"
-            style={{ background: "linear-gradient(135deg, #8b5cf6 0%, #5b8def 100%)" }}
-          >
-            {APP_NAME[0]}
+          <span className="text-fg-primary">
+            <BeaconMark size={28} />
           </span>
           <div className="flex flex-col leading-tight">
             <span className="font-semibold text-fg-primary">{APP_NAME}</span>
@@ -57,7 +55,7 @@ export function LoginPage() {
         </button>
         <div className="text-xs text-fg-muted mt-4 text-center">
           Need an account?{" "}
-          <Link to="/register" className="text-accent-green hover:underline">
+          <Link to="/register" className="text-fg-primary hover:underline">
             Register
           </Link>
         </div>

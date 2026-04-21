@@ -107,8 +107,7 @@ export function OverviewPage() {
 
       {empty && (
         <div className="card p-10 text-center">
-          <div className="text-5xl mb-4">📈</div>
-          <h2 className="text-xl font-semibold text-fg-primary mb-2">Start your portfolio</h2>
+          <h2 className="text-fg-primary mb-2">Start your portfolio</h2>
           <p className="text-sm text-fg-secondary max-w-md mx-auto mb-5">
             Use the <span className="text-fg-primary font-medium">+ Connect brokerage</span> button in the sidebar to link your first account.
           </p>
@@ -125,7 +124,7 @@ export function OverviewPage() {
             <div className="card p-5 lg:col-span-2">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-semibold text-fg-primary">Top holdings</h3>
-                <Link to="/holdings" className="text-xs text-accent-green hover:underline">
+                <Link to="/holdings" className="text-xs text-fg-primary hover:underline">
                   See all →
                 </Link>
               </div>
@@ -159,7 +158,7 @@ export function OverviewPage() {
             <div className="card p-5">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-semibold text-fg-primary">Dividends — 12 mo</h3>
-                <Link to="/dividends" className="text-xs text-accent-green hover:underline">
+                <Link to="/dividends" className="text-xs text-fg-primary hover:underline">
                   Details →
                 </Link>
               </div>
@@ -193,7 +192,7 @@ export function OverviewPage() {
             <div className="card p-5 lg:col-span-2">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-semibold text-fg-primary">Recent activity</h3>
-                <Link to="/transactions" className="text-xs text-accent-green hover:underline">
+                <Link to="/transactions" className="text-xs text-fg-primary hover:underline">
                   See all →
                 </Link>
               </div>
