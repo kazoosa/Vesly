@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { SnapTradeReact } from "snaptrade-react";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 
@@ -19,14 +20,23 @@ declare global {
 const LINK_UI_URL = (import.meta.env.VITE_LINK_UI_URL as string | undefined) ?? "http://localhost:5175";
 
 export function ConnectButton() {
-  const { accessToken } = useAuth();
+  const { accessToken, developer } = useAuth();
   const qc = useQueryClient();
   const fetcher = apiFetch(() => accessToken);
   const [sdkReady, setSdkReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [snapLoginLink, setSnapLoginLink] = useState<string | null>(null);
 
+  const isDemo = developer?.email === "demo@finlink.dev";
+
+  // Preload the mock SDK for demo account. Non-demo accounts use SnapTrade,
+  // which is loaded via the snaptrade-react package — no script tag needed.
   useEffect(() => {
+    if (!isDemo) {
+      setSdkReady(true);
+      return;
+    }
     if (window.FinLink) {
       setSdkReady(true);
       return;
@@ -39,12 +49,11 @@ export function ConnectButton() {
       return;
     }
     const s = document.createElement("script");
-    // Cache-bust so a stale SDK (from a prior build) can't linger
     s.src = `${LINK_UI_URL}/sdk/finlink.js?v=${Date.now()}`;
     s.dataset.finlinkSdk = "1";
     s.onload = () => setSdkReady(true);
     document.body.appendChild(s);
-  }, []);
+  }, [isDemo]);
 
   async function connect() {
     setBusy(true);
@@ -85,34 +94,22 @@ export function ConnectButton() {
         return;
       }
 
-      // SnapTrade path — open portal in a popup window
-      const popup = window.open(
-        resp.redirect_url,
-        "snaptrade-connect",
-        "width=520,height=720,left=200,top=100,menubar=no,toolbar=no",
-      );
-      if (!popup) {
-        setError("Popup blocked — allow popups for this site and try again.");
-        return;
-      }
-
-      // Poll for popup close, then trigger sync
-      const poll = setInterval(async () => {
-        if (popup.closed) {
-          clearInterval(poll);
-          try {
-            await fetcher("/api/snaptrade/sync", { method: "POST" });
-          } catch (err) {
-            console.error("sync failed", err);
-          }
-          qc.invalidateQueries();
-        }
-      }, 1000);
+      // SnapTrade path — open the embedded portal (no popup window).
+      setSnapLoginLink(resp.redirect_url);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function afterSnapTradeConnect() {
+    try {
+      await fetcher("/api/snaptrade/sync", { method: "POST" });
+    } catch (err) {
+      console.error("sync failed", err);
+    }
+    qc.invalidateQueries();
   }
 
   return (
@@ -125,6 +122,28 @@ export function ConnectButton() {
         {busy ? "Opening…" : "+ Connect brokerage"}
       </button>
       {error && <div className="text-xs text-rose-400 mt-2">{error}</div>}
+
+      <SnapTradeReact
+        loginLink={snapLoginLink ?? undefined}
+        isOpen={Boolean(snapLoginLink)}
+        close={() => setSnapLoginLink(null)}
+        onSuccess={(id: unknown) => {
+          console.log("SnapTrade connected:", id);
+          afterSnapTradeConnect();
+          setSnapLoginLink(null);
+        }}
+        onError={(err: unknown) => {
+          console.error("SnapTrade error:", err);
+          setError("Connection failed — please try again.");
+          setSnapLoginLink(null);
+        }}
+        onExit={() => {
+          // User closed without connecting. Still run a sync in case they
+          // added an account — no-op if not.
+          afterSnapTradeConnect();
+          setSnapLoginLink(null);
+        }}
+      />
     </div>
   );
 }
