@@ -1,6 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
-import { StatusCard } from "./components/StatusCard";
-import { OverallStatus } from "./components/OverallStatus";
+import { Icon } from "./components/Icon";
+import { KpiGrid } from "./components/KpiGrid";
+import { StatusBanner } from "./components/StatusBanner";
+import { InfraCard } from "./components/InfraCard";
+import { ActivityCard } from "./components/ActivityCard";
 
 type OpsPayload = {
   ok: boolean;
@@ -97,329 +100,360 @@ export function App() {
 
   if (!authed) {
     return (
-      <div className="login">
-        <h2>Beacon Ops</h2>
-        <p>Enter the password to see how Beacon is doing.</p>
-        <form onSubmit={doLogin}>
-          <input
-            type="password"
-            placeholder="password"
-            value={loginValue}
-            onChange={(e) => setLoginValue(e.target.value)}
-            autoFocus
-          />
-          {loginError && <div className="error">{loginError}</div>}
-          <button className="btn btn-primary" type="submit">
-            Unlock
-          </button>
-        </form>
+      <div className="login-shell">
+        <div className="login">
+          <div className="login-logo">B</div>
+          <h2>Beacon Ops</h2>
+          <p>Enter the password to see your dashboard.</p>
+          <form onSubmit={doLogin}>
+            <input
+              type="password"
+              placeholder="Password"
+              value={loginValue}
+              onChange={(e) => setLoginValue(e.target.value)}
+              autoFocus
+            />
+            {loginError && <div className="error">{loginError}</div>}
+            <button className="btn btn-primary" type="submit">
+              Unlock
+            </button>
+          </form>
+        </div>
       </div>
     );
   }
 
-  const services = data?.services;
-
-  // Roll up the overall status — worst of any service wins
-  const allStatuses = services
-    ? Object.entries(services).map(([name, s]) => {
-        // GitHub rate-limit errors are a warning, not a "real" outage —
-        // don't drag the whole board to red for that.
-        if (name === "github" && s.status === "error") return "warn" as const;
-        return s.status;
-      })
-    : [];
-  const overallStatus: Status = allStatuses.includes("error")
-    ? "error"
-    : allStatuses.includes("warn")
-      ? "warn"
-      : allStatuses.includes("unconfigured")
-        ? "unconfigured"
-        : "ok";
+  const s = data?.services;
+  const overallStatus: Status = s
+    ? rollUpStatus(s)
+    : "unconfigured";
 
   return (
     <div className="app">
-      <div className="topbar">
-        <h1>
-          <span className="logo">B</span>
-          Beacon Ops
-        </h1>
-        <div className="actions">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark">B</div>
+          <div>
+            <div className="brand-name">Beacon Ops</div>
+            <div className="brand-sub">Mission control</div>
+          </div>
+        </div>
+        <div className="topbar-actions">
           {lastFetched && (
             <span className="last-refresh">
-              Checked {fmtRelative(lastFetched)}
+              Updated {fmtRelative(lastFetched)}
             </span>
           )}
-          <button className="btn" onClick={fetchOps} disabled={loading}>
-            {loading ? <span className="spin">↻</span> : "↻"} Refresh
+          <button className="icon-btn" onClick={fetchOps} disabled={loading} title="Refresh">
+            <Icon.RefreshCw className={loading ? "spin" : ""} />
           </button>
-          <button className="btn" onClick={signOut}>
+          <button className="btn btn-ghost" onClick={signOut}>
             Sign out
           </button>
         </div>
-      </div>
+      </header>
 
       {err && <div className="error">{err}</div>}
 
-      {!data && loading && <div className="loading">Loading…</div>}
-
-      {services && (
+      {s && (
         <>
-          <OverallStatus status={overallStatus} services={services} />
+          <StatusBanner status={overallStatus} services={s} />
 
-          <div className="section-label">Health checks</div>
-          <div className="grid">
-            <StatusCard
-              title="Is Beacon working?"
-              subtitle="Users can sign in and use the app"
-              status={services.health?.status}
-              hero={heroFromHealth(services.health)}
+          <SectionHeader icon={<Icon.TrendUp />} title="Business" subtitle="Your numbers, live from the database" />
+          <KpiGrid business={s.business} />
+
+          <SectionHeader icon={<Icon.Activity />} title="Health" subtitle="Is everything running right now" />
+          <div className="grid-3">
+            <InfraCard
+              icon={<Icon.Globe />}
+              title="Beacon App"
+              subtitle="Users can sign in and use it"
+              status={s.health?.status}
+              hero={s.health?.data?.ok ? "Working" : "Down"}
               metrics={[
                 {
                   label: "Response speed",
-                  value: speedLabel(services.health?.data?.latency as string | undefined),
-                  hint: services.health?.data?.latency as string | undefined,
+                  value: speedLabel(s.health?.data?.latencyMs as number | undefined),
+                  sub: s.health?.data?.latencyMs
+                    ? `${s.health.data.latencyMs} ms`
+                    : undefined,
+                },
+                {
+                  label: "Environment",
+                  value: String(s.health?.data?.environment ?? "—"),
                 },
               ]}
-              extLink="https://stats.uptimerobot.com/yo9bjqio7P"
-              extLabel="Open UptimeRobot status"
+              link="https://stats.uptimerobot.com/yo9bjqio7P"
+              linkLabel="Uptime history"
             />
 
-            <StatusCard
+            <InfraCard
+              icon={<Icon.Server />}
               title="Backend server"
-              subtitle="Runs everything — login, data, syncs"
-              status={services.render?.status}
-              hero={
-                services.render?.status === "ok"
-                  ? "Running"
-                  : services.render?.status === "warn"
-                    ? "Busy"
-                    : "Down"
-              }
+              subtitle="Login, data, brokerage sync"
+              status={s.render?.status}
+              hero={renderHero(s.render)}
               metrics={[
                 {
-                  label: "Last updated",
-                  value: String(services.render?.data?.["last deploy"] ?? "—"),
+                  label: "Last update",
+                  value: String(s.render?.data?.["last deploy"] ?? "—"),
+                  sub: String(s.render?.data?.["last change"] ?? ""),
                 },
                 {
-                  label: "Last change made",
-                  value: lastCommitFromRender(services.render),
+                  label: "Region",
+                  value: String(s.render?.data?.region ?? "—"),
                 },
               ]}
-              extLink="https://dashboard.render.com"
-              extLabel="Open Render"
+              link="https://dashboard.render.com"
+              linkLabel="Render"
             />
 
-            <StatusCard
+            <InfraCard
+              icon={<Icon.Globe />}
               title="Websites"
-              subtitle="Dashboard + Link UI (the parts people see)"
-              status={services.vercel?.status}
-              hero={vercelHero(services.vercel)}
-              metrics={vercelMetrics(services.vercel)}
-              extLink="https://vercel.com/dashboard"
-              extLabel="Open Vercel"
+              subtitle="What your users see"
+              status={s.vercel?.status}
+              hero={vercelHero(s.vercel)}
+              metrics={vercelMetrics(s.vercel)}
+              link="https://vercel.com/dashboard"
+              linkLabel="Vercel"
             />
           </div>
 
-          <div className="section-label">Usage (free tier limits)</div>
-          <div className="grid">
-            <StatusCard
-              title="Database"
-              subtitle="Where user accounts + holdings are saved"
-              status={services.neon?.status}
-              hero={
-                services.neon?.data?.["storage used"]
-                  ? String(services.neon.data["storage used"])
-                  : "—"
-              }
+          <SectionHeader icon={<Icon.Zap />} title="Free tier usage" subtitle="How close you are to limits" />
+          <div className="grid-2">
+            <InfraCard
+              icon={<Icon.Database />}
+              title="Database (Neon)"
+              subtitle="All app data"
+              status={s.neon?.status}
+              hero={String(s.neon?.data?.storageHuman ?? "—")}
+              progress={{
+                value: neonPct(s.neon),
+                label: "3 GB free tier",
+              }}
               metrics={[
                 {
-                  label: "Storage limit",
-                  value: "3 GB (free tier)",
-                  progress: neonStorageProgress(services.neon),
+                  label: "Compute (this hour)",
+                  value: `${s.neon?.data?.computeHours ?? 0} CU-h`,
+                  sub: "100 CU-h / month free",
                 },
                 {
-                  label: "Compute this hour",
-                  value: String(services.neon?.data?.["compute (this hour)"] ?? "—"),
-                  hint: "100 CU-hours/month free",
+                  label: "Branches",
+                  value: String(s.neon?.data?.branches ?? "—"),
+                },
+                {
+                  label: "Postgres version",
+                  value: String(s.neon?.data?.pgVersion ?? "—"),
                 },
               ]}
-              extLink="https://console.neon.tech"
-              extLabel="Open Neon"
+              link="https://console.neon.tech"
+              linkLabel="Neon"
             />
 
-            <StatusCard
-              title="Cache (Redis)"
-              subtitle="Speeds up repeat requests"
-              status={services.upstash?.status}
-              hero={
-                services.upstash?.data?.["commands (today)"]
-                  ? `${services.upstash.data["commands (today)"]} today`
-                  : "—"
-              }
+            <InfraCard
+              icon={<Icon.Layers />}
+              title="Cache (Upstash Redis)"
+              subtitle="Speeds up sessions + sync jobs"
+              status={s.upstash?.status}
+              hero={fmtNumber(s.upstash?.data?.commandsToday)}
+              progress={{
+                value: upstashPct(s.upstash),
+                label: "500,000 commands / day",
+              }}
               metrics={[
-                {
-                  label: "Daily command limit",
-                  value: "500,000 commands/day (free)",
-                  progress: upstashDailyProgress(services.upstash),
-                },
                 {
                   label: "Keys stored",
-                  value: String(services.upstash?.data?.keys ?? "—"),
+                  value: fmtNumber(s.upstash?.data?.keys),
+                },
+                {
+                  label: "Bandwidth today",
+                  value: bytesH(s.upstash?.data?.bandwidthBytes),
                 },
               ]}
-              extLink="https://console.upstash.com"
-              extLabel="Open Upstash"
+              link="https://console.upstash.com"
+              linkLabel="Upstash"
             />
+          </div>
 
-            <StatusCard
-              title="Code changes"
-              subtitle="What you've pushed to the app lately"
-              status={services.github?.status === "error" ? "warn" : services.github?.status}
-              hero={
-                services.github?.data?._events
-                  ? `${(services.github.data._events as Array<unknown>).length} recent`
-                  : services.github?.status === "error"
-                    ? "Rate limited"
-                    : "—"
-              }
-              errorMessage={
-                services.github?.status === "error"
-                  ? "GitHub blocked the request (anonymous rate limit). Add a GITHUB_TOKEN env var to fix — see ops/README.md."
-                  : undefined
-              }
-              metrics={
-                services.github?.data
-                  ? [
-                      {
-                        label: "Last change",
-                        value: String(services.github.data["last commit"] ?? "—"),
-                      },
-                      {
-                        label: "Open pull requests",
-                        value: String(services.github.data["open PRs"] ?? "0"),
-                        hint: "Changes waiting to be merged",
-                      },
-                    ]
-                  : undefined
-              }
+          <SectionHeader
+            icon={<Icon.GitCommit />}
+            title="Recent activity"
+            subtitle="Code + deploys + new users"
+          />
+          <div className="grid-3">
+            <ActivityCard
+              icon={<Icon.GitCommit />}
+              title="Recent commits"
+              status={s.github?.status === "error" ? "warn" : s.github?.status}
               events={
-                (services.github?.data?._events as
+                (s.github?.data?._events as
                   | Array<{ title: string; time?: string }>
                   | undefined) ?? undefined
               }
-              extLink="https://github.com/kazoosa/Beacon"
-              extLabel="Open GitHub"
+              errorMessage={
+                s.github?.status === "error"
+                  ? "GitHub rate-limited — add a GITHUB_TOKEN env var to fix."
+                  : undefined
+              }
+              link="https://github.com/kazoosa/Beacon/commits/main"
+              linkLabel="GitHub"
+            />
+
+            <ActivityCard
+              icon={<Icon.Server />}
+              title="Recent backend deploys"
+              status={s.render?.status}
+              events={
+                (s.render?.data?._events as
+                  | Array<{ title: string; time?: string }>
+                  | undefined) ?? undefined
+              }
+              link="https://dashboard.render.com"
+              linkLabel="Render"
+            />
+
+            <ActivityCard
+              icon={<Icon.Users />}
+              title="Latest signups"
+              status={s.business?.status}
+              events={
+                (s.business?.data?._recentSignups as
+                  | Array<{ title: string; time?: string }>
+                  | undefined) ?? undefined
+              }
+              emptyMessage="No signups yet. First one will show up here."
             />
           </div>
         </>
       )}
 
-      <div className="footer">
-        Auto-refreshes every 30 seconds · Beacon Ops v0.2
+      <footer className="footer">
+        Auto-refreshes every 30 seconds · Beacon Ops v0.3
+      </footer>
+    </div>
+  );
+}
+
+/* ---------------------------------------- helpers */
+
+function SectionHeader({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <div className="section-head">
+      <span className="section-icon">{icon}</span>
+      <div>
+        <div className="section-title">{title}</div>
+        <div className="section-sub">{subtitle}</div>
       </div>
     </div>
   );
 }
 
-/* --------------------------------------------- friendly translators */
+function rollUpStatus(services: Record<string, ServiceData>): Status {
+  const filtered = Object.entries(services).map(([name, sd]) => {
+    // GitHub rate-limit = warning, not real outage
+    if (name === "github" && sd.status === "error") return "warn" as const;
+    return sd.status;
+  });
+  if (filtered.includes("error")) return "error";
+  if (filtered.includes("warn")) return "warn";
+  if (filtered.every((s) => s === "ok")) return "ok";
+  if (filtered.includes("unconfigured")) return "unconfigured";
+  return "ok";
+}
 
 function fmtRelative(d: Date): string {
   const sec = Math.round((Date.now() - d.getTime()) / 1000);
   if (sec < 5) return "just now";
-  if (sec < 60) return `${sec} seconds ago`;
+  if (sec < 60) return `${sec}s ago`;
   const min = Math.round(sec / 60);
-  if (min < 60) return `${min} minute${min === 1 ? "" : "s"} ago`;
+  if (min < 60) return `${min}m ago`;
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
+  if (hr < 24) return `${hr}h ago`;
   return d.toLocaleString();
 }
 
-function heroFromHealth(h: ServiceData | undefined): string {
-  if (!h) return "Unknown";
-  if (h.status === "ok") return "Working ✓";
-  if (h.status === "warn") return "Slow";
-  return "Down";
-}
-
-function speedLabel(latency: string | undefined): string {
-  if (!latency) return "—";
-  const ms = parseInt(latency, 10);
-  if (Number.isNaN(ms)) return latency;
+function speedLabel(ms: number | undefined): string {
+  if (ms === undefined) return "—";
   if (ms < 300) return "Fast";
   if (ms < 1000) return "Normal";
   if (ms < 3000) return "Slow (cold start)";
   return "Very slow";
 }
 
-function lastCommitFromRender(r: ServiceData | undefined): string {
-  const events = r?.data?._events as Array<{ title: string; time?: string }> | undefined;
-  if (events && events.length > 0) {
-    // Find the most recent "live" deploy for context
-    const live = events.find((e) => e.title.startsWith("live"));
-    if (live) return live.title.replace(/^live · /, "").slice(0, 60);
-  }
-  return String(r?.data?.commit ?? "—");
+function renderHero(r: ServiceData | undefined): string {
+  if (!r || r.status === "unconfigured") return "—";
+  if (r.status === "ok") return "Running";
+  if (r.status === "warn") return "Busy";
+  return "Down";
 }
 
 function vercelHero(v: ServiceData | undefined): string {
-  if (!v) return "—";
-  const projects = v.data as Record<string, unknown> | undefined;
-  if (!projects) return "—";
-  const all = Object.entries(projects).filter(([k]) => !k.startsWith("_"));
-  const readyCount = all.filter(([, val]) =>
+  if (!v?.data) return "—";
+  const projects = Object.entries(v.data).filter(([k]) => !k.startsWith("_"));
+  if (projects.length === 0) return "—";
+  const readyCount = projects.filter(([, val]) =>
     String(val).toLowerCase().includes("ready"),
   ).length;
-  if (all.length === 0) return "—";
-  if (readyCount === all.length) return "All live ✓";
-  return `${readyCount}/${all.length} live`;
+  if (readyCount === projects.length) return "All live";
+  return `${readyCount}/${projects.length} live`;
 }
 
 function vercelMetrics(
   v: ServiceData | undefined,
-): Array<{ label: string; value: string; hint?: string }> {
+): Array<{ label: string; value: string; sub?: string }> {
   if (!v?.data) return [];
+  const map: Record<string, string> = {
+    "vesly-dashboard": "Main site",
+    beacon: "Ops page",
+    "vesly-link-ui": "Connect modal",
+  };
   return Object.entries(v.data)
     .filter(([k]) => !k.startsWith("_"))
+    .slice(0, 3)
     .map(([name, val]) => {
       const s = String(val);
+      const parts = s.split(" · ");
       const isReady = s.toLowerCase().includes("ready");
       return {
-        label: prettyProjectName(name),
-        value: isReady ? "Live ✓" : s.split(" · ")[0] ?? s,
-        hint: s.includes("·") ? s.split(" · ")[1] : undefined,
+        label: map[name] ?? name,
+        value: isReady ? "Live" : parts[0] ?? s,
+        sub: parts[1],
       };
     });
 }
 
-function prettyProjectName(raw: string): string {
-  // "vesly-dashboard" → "Main site" or similar friendly names
-  const map: Record<string, string> = {
-    "vesly-dashboard": "Main website",
-    "beacon": "Ops dashboard (this page)",
-    "vesly-link-ui": "Connect modal",
-    "vesly-backend": "Backend",
-  };
-  return map[raw] ?? raw;
+function neonPct(n: ServiceData | undefined): number {
+  const b = Number(n?.data?.storageBytes ?? 0);
+  const limit = 3 * 1024 ** 3;
+  return Math.min(100, (b / limit) * 100);
 }
 
-function neonStorageProgress(n: ServiceData | undefined): number | undefined {
-  const used = n?.data?.["storage used"] as string | undefined;
-  if (!used) return undefined;
-  // Parse e.g. "0 B", "1.2 MB", "500 MB" into MB
-  const m = used.match(/^([\d.]+)\s*(B|KB|MB|GB)$/);
-  if (!m) return undefined;
-  const n1 = parseFloat(m[1]!);
-  const unit = m[2];
-  const mb =
-    unit === "B" ? n1 / 1024 / 1024 : unit === "KB" ? n1 / 1024 : unit === "MB" ? n1 : n1 * 1024;
-  const limitMb = 3 * 1024; // 3 GB free tier
-  return Math.min(100, (mb / limitMb) * 100);
+function upstashPct(u: ServiceData | undefined): number {
+  const c = Number(u?.data?.commandsToday ?? 0);
+  return Math.min(100, (c / 500_000) * 100);
 }
 
-function upstashDailyProgress(u: ServiceData | undefined): number | undefined {
-  const raw = u?.data?.["commands (today)"] as string | number | undefined;
-  if (raw === undefined) return undefined;
-  const n = typeof raw === "string" ? parseInt(raw.replace(/,/g, ""), 10) : raw;
-  if (Number.isNaN(n)) return undefined;
-  return Math.min(100, (n / 500_000) * 100);
+function fmtNumber(n: unknown): string {
+  if (n === undefined || n === null) return "—";
+  const num = typeof n === "number" ? n : parseFloat(String(n));
+  if (Number.isNaN(num)) return "—";
+  return num.toLocaleString();
+}
+
+function bytesH(n: unknown): string {
+  const v = typeof n === "number" ? n : parseFloat(String(n ?? 0));
+  if (!Number.isFinite(v)) return "—";
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 ** 2) return `${(v / 1024).toFixed(1)} KB`;
+  if (v < 1024 ** 3) return `${(v / 1024 ** 2).toFixed(1)} MB`;
+  return `${(v / 1024 ** 3).toFixed(2)} GB`;
 }
