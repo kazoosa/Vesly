@@ -13,6 +13,8 @@ with 20+ brokers via SnapTrade, CSV fallback for anything else.
 - **Demo** — hit `/demo` on the live site (or click "Try the demo" on the landing). It auto-signs you into a read-only account pre-seeded with realistic mock data. Nothing you do in there touches real money.
 - **Your real accounts** — register, then connect via [SnapTrade's free tier](https://snaptrade.com) (5 connections, no credit card).
 
+**Debugging the demo.** If the demo is ever empty or won't load, `GET https://<backend>/api/demo/status` is a public no-auth endpoint that reports whether the demo developer exists, how many items / holdings it has, and how many institutions / securities are seeded. The `/demo` page also surfaces the same data in a diagnostic panel when it can't open the session.
+
 ---
 
 ## What's new

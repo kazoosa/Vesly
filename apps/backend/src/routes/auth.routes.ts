@@ -84,27 +84,6 @@ router.post("/login", async (req, res, next) => {
     if (!developer) throw Errors.unauthorized("Invalid credentials");
     const ok = await verifyPassword(input.password, developer.passwordHash);
     if (!ok) throw Errors.unauthorized("Invalid credentials");
-
-    // Demo account: guarantee seed data before returning tokens, so the
-    // client never lands on an empty dashboard. Idempotent + fast on
-    // repeat calls (skips when holdings already exist).
-    if (developer.email === DEMO_EMAIL) {
-      try {
-        const { seedDemoPortfolioForDeveloper } = await import(
-          "../services/demoSeedService.js"
-        );
-        const t0 = Date.now();
-        const r = await seedDemoPortfolioForDeveloper(developer.id, developer.email);
-        console.log(
-          `[login] demo seed guarantee: created=${r.created} items=${r.itemCount} in ${Date.now() - t0}ms`,
-        );
-      } catch (err) {
-        // Don't fail login if seeding errored — user can still sign in and
-        // hit Refresh to retry. Logged server-side either way.
-        console.error("[login] demo seed failed:", err);
-      }
-    }
-
     const access = signDeveloperAccess(developer.id, developer.email);
     const { token: refresh, jti } = signDeveloperRefresh(developer.id, developer.email);
     await redis.set(`refresh:${developer.id}:${jti}`, "1", "EX", 30 * 24 * 3600);

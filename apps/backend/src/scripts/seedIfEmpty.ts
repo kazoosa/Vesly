@@ -3,44 +3,87 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 /**
- * On boot, ensure the demo developer + seeded mock portfolio exists.
+ * On boot, ensure the demo developer exists AND has a healthy portfolio
+ * (items + holdings). The previous version only counted Items — which
+ * let a partial-seed state (Items present, zero InvestmentHoldings)
+ * pass as "already seeded" and left every subsequent boot stuck with
+ * an empty demo dashboard forever.
  *
- * The seed script (src/prisma/seed.ts) is idempotent:
- *   - Institutions & securities are upserted (safe to re-run)
- *   - Demo developer is only created if demo@finlink.dev doesn't exist
- *   - Demo items are only created if the demo app has zero items
+ * This version:
+ *   1. If the demo developer doesn't exist, runs the full prisma seed.
+ *   2. If the demo developer exists but has zero holdings, delegates
+ *      to seedDemoPortfolioForDeveloper(), which deletes empty items,
+ *      upserts institutions/securities, and re-creates the 4-brokerage
+ *      portfolio end-to-end.
+ *   3. If the demo developer already has holdings, no-op.
  *
- * So running it every boot leaves real user accounts untouched while
- * guaranteeing the demo account always has data to showcase.
+ * Runs via dist/scripts/seedIfEmpty.js in the Docker entrypoint.
  */
 async function main() {
   const demoEmail = "demo@finlink.dev";
-  const demo = await prisma.developer.findUnique({ where: { email: demoEmail } });
 
+  const demo = await prisma.developer.findUnique({
+    where: { email: demoEmail },
+    select: { id: true },
+  });
+
+  // Case 1: demo developer doesn't exist → full seed (creates dev +
+  // institutions + securities + items).
   if (!demo) {
-    console.log("[seedIfEmpty] demo account missing — running seed");
-  } else {
-    // Count demo items; if zero, re-run so the demo has its portfolio back
-    const apps = await prisma.application.findMany({
-      where: { developerId: demo.id },
-      select: { id: true },
-    });
-    const itemCount = apps.length
-      ? await prisma.item.count({ where: { applicationId: { in: apps.map((a) => a.id) } } })
-      : 0;
-    if (itemCount > 0) {
-      console.log(`[seedIfEmpty] demo account has ${itemCount} items — skipping seed`);
-      await prisma.$disconnect();
-      return;
-    }
-    console.log("[seedIfEmpty] demo account exists but has no items — re-seeding");
+    console.log("[seedIfEmpty] demo account missing — running full seed");
+    await prisma.$disconnect();
+    await import("../prisma/seed.js");
+    return;
   }
 
+  // Case 2/3: demo developer exists. Check for healthy holdings
+  // (holdings are linked to items via Account, so we have to join).
+  const apps = await prisma.application.findMany({
+    where: { developerId: demo.id },
+    select: { id: true },
+  });
+  const items = apps.length
+    ? await prisma.item.findMany({
+        where: { applicationId: { in: apps.map((a) => a.id) } },
+        select: { id: true },
+      })
+    : [];
+
+  let holdingsCount = 0;
+  if (items.length > 0) {
+    holdingsCount = await prisma.investmentHolding.count({
+      where: { account: { itemId: { in: items.map((i) => i.id) } } },
+    });
+  }
+
+  if (holdingsCount > 0) {
+    console.log(
+      `[seedIfEmpty] demo healthy — items=${items.length}, holdings=${holdingsCount} — skipping seed`,
+    );
+    await prisma.$disconnect();
+    return;
+  }
+
+  // Partial / broken state: items exist but no holdings (or no items
+  // at all but the developer is here). Self-heal.
+  console.log(
+    `[seedIfEmpty] demo partial — items=${items.length}, holdings=${holdingsCount} — running self-heal seed`,
+  );
+  const { seedDemoPortfolioForDeveloper } = await import(
+    "../services/demoSeedService.js"
+  );
+  const t0 = Date.now();
+  const result = await seedDemoPortfolioForDeveloper(demo.id, demoEmail);
+  console.log(
+    `[seedIfEmpty] done created=${result.created} items=${result.itemCount} in ${Date.now() - t0}ms`,
+  );
+
   await prisma.$disconnect();
-  await import("../prisma/seed.js");
 }
 
 main().catch((e) => {
   console.error("[seedIfEmpty] failed:", e);
-  process.exit(0); // don't block server startup — app still boots, just without demo
+  // Don't block server startup — the app still boots, just without a
+  // re-seeded demo. A subsequent deploy or manual seed can fix it.
+  process.exit(0);
 });

@@ -30,6 +30,7 @@ import { SECURITIES } from "../constants/securities.js";
  * expensive work from running twice.
  */
 async function ensureReferenceData(): Promise<SecurityRef[]> {
+  const t0 = Date.now();
   // Institutions
   for (const i of INSTITUTIONS) {
     await prisma.institution.upsert({
@@ -43,8 +44,10 @@ async function ensureReferenceData(): Promise<SecurityRef[]> {
       create: { ...i },
     });
   }
+  console.log(`[demoSeed] upserted ${INSTITUTIONS.length} institutions in ${Date.now() - t0}ms`);
 
   // Securities
+  const t1 = Date.now();
   const now = new Date();
   const refs: SecurityRef[] = [];
   for (const s of SECURITIES) {
@@ -75,6 +78,7 @@ async function ensureReferenceData(): Promise<SecurityRef[]> {
       paysDividend: Boolean(s.paysDividend),
     });
   }
+  console.log(`[demoSeed] upserted ${SECURITIES.length} securities in ${Date.now() - t1}ms`);
   return refs;
 }
 
@@ -82,6 +86,9 @@ export async function seedDemoPortfolioForDeveloper(
   developerId: string,
   developerEmail: string,
 ): Promise<{ created: boolean; itemCount: number }> {
+  const tStart = Date.now();
+  console.log(`[demoSeed] start developer=${developerEmail}`);
+
   // 0) Make sure institutions + securities exist. Cheap upsert — no-op
   //    on the second call because every row already matches.
   const refs = await ensureReferenceData();
@@ -115,10 +122,15 @@ export async function seedDemoPortfolioForDeveloper(
       where: { account: { itemId: { in: existingItems.map((i) => i.id) } } },
     });
     if (holdingsCount > 0) {
+      console.log(
+        `[demoSeed] healthy — items=${existingItems.length}, holdings=${holdingsCount} — skipping (${Date.now() - tStart}ms)`,
+      );
       return { created: false, itemCount: existingItems.length };
     }
     // Partial / broken seed — nuke and start over.
-    console.log(`[demoSeed] wiping ${existingItems.length} empty items for ${developerEmail}`);
+    console.log(
+      `[demoSeed] wiping ${existingItems.length} empty items (holdings=${holdingsCount}) for ${developerEmail}`,
+    );
     await prisma.item.deleteMany({
       where: { id: { in: existingItems.map((i) => i.id) } },
     });
@@ -133,6 +145,7 @@ export async function seedDemoPortfolioForDeveloper(
   ];
 
   for (const b of brokerages) {
+    const tItem = Date.now();
     await seedOneItem({
       applicationId: app.id,
       institutionId: b.institutionId,
@@ -140,9 +153,13 @@ export async function seedDemoPortfolioForDeveloper(
       securities: refs,
       products: b.products,
     });
+    console.log(`[demoSeed] item ${b.institutionId} created in ${Date.now() - tItem}ms`);
   }
 
   const itemCount = await prisma.item.count({ where: { applicationId: app.id } });
+  console.log(
+    `[demoSeed] done created=true items=${itemCount} total=${Date.now() - tStart}ms`,
+  );
   return { created: true, itemCount };
 }
 
