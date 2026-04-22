@@ -19,7 +19,7 @@ const timelineData: TimelineItem[] = [
     id: 1,
     title: "Sign up",
     date: "30 seconds",
-    content: "Email + password. No card, no phone, no onboarding quiz. You're in before a support chat would've loaded.",
+    content: "Email and a password. No credit card, no phone number, no 10-screen onboarding quiz. You're in before a support chat could load.",
     category: "Start",
     icon: UserPlus,
   },
@@ -27,7 +27,7 @@ const timelineData: TimelineItem[] = [
     id: 2,
     title: "Connect brokerage",
     date: "~2 minutes",
-    content: "Auto-sync 20+ brokerages via read-only OAuth — or drop in a CSV. Credentials never touch Beacon's servers.",
+    content: "Auto-sync with 20+ brokerages via read-only OAuth, or drop in a CSV. Your brokerage password never reaches us.",
     category: "Connect",
     icon: Link2,
   },
@@ -35,7 +35,7 @@ const timelineData: TimelineItem[] = [
     id: 3,
     title: "See holdings",
     date: "Instant",
-    content: "Consolidated view across every account. Deduped by ticker, sorted by what you care about, expandable per-account.",
+    content: "A single view across every account you've connected. Deduped by ticker, sortable by whatever you care about, and you can expand any row to see which accounts actually hold it.",
     category: "View",
     icon: LayoutDashboard,
   },
@@ -43,7 +43,7 @@ const timelineData: TimelineItem[] = [
     id: 4,
     title: "Track dividends",
     date: "Automatic",
-    content: "YTD totals, monthly bar chart, top payers, and a forward 12-month forecast. Know what's coming, not just what came.",
+    content: "YTD totals, a monthly bar chart, your top payers, and a forward 12-month forecast. So you know what's coming in, not just what already did.",
     category: "Income",
     icon: Coins,
   },
@@ -51,7 +51,7 @@ const timelineData: TimelineItem[] = [
     id: 5,
     title: "Rebalance",
     date: "Any time",
-    content: "Allocation drift by security, brokerage, and asset class. See exactly what to sell and what to buy.",
+    content: "Allocation drift by security, by brokerage, by asset class. Beacon shows you what's overweight and by how much.",
     category: "Optimize",
     icon: Scale,
   },
@@ -61,53 +61,55 @@ const features = [
   {
     icon: LayoutDashboard,
     title: "Unified holdings",
-    body: "Every share, across every broker, in one table. Deduped, sorted, exportable.",
+    body: "Every share you own, across every broker you've connected, in one table. You can sort it, filter it, and download it as CSV.",
   },
   {
     icon: RefreshCw,
     title: "Always in sync",
-    body: "Background refresh keeps your numbers live. Connect once — never touch a spreadsheet again.",
+    body: "Background refresh keeps your numbers up to date. Connect once and you can retire the spreadsheet.",
   },
   {
     icon: Coins,
     title: "Dividend intelligence",
-    body: "Monthly income, YTD totals, forward 12-month forecast, top payers. Income that actually adds up.",
+    body: "Monthly income, YTD totals, a 12-month forward forecast, and who your biggest payers actually are. Dividend tracking that does math instead of just listing.",
   },
   {
     icon: PieChart,
     title: "Allocation breakdown",
-    body: "By security, by brokerage, by asset class. See your real concentration before the market finds it.",
+    body: "Three views of your allocation: by security, by brokerage, by asset class. You'll see your real concentration before the market does.",
   },
   {
     icon: LineChart,
     title: "Performance tracking",
-    body: "Day, YTD, total return. Benchmark against the S&P 500 or any index you choose.",
+    body: "Day, YTD, and total return. Benchmark against the S&P 500 or pick your own index.",
   },
   {
     icon: Upload,
     title: "CSV fallback",
-    body: "Broker not supported? Export a CSV from anywhere — Beacon parses every major format.",
+    body: "Broker not supported yet? Export a CSV and we'll parse it. Every major format, most of the weirder ones too.",
   },
 ];
 
 const differentiators = [
   {
-    title: "Every brokerage — not just the US big three",
-    body: "Robinhood, IBKR, Vanguard, Wealthsimple, Questrade, DEGIRO, Trading212, Moomoo, eToro, plus Coinbase/Kraken/Binance. Twenty-plus out of the box.",
+    title: "Every brokerage, not just the US big three",
+    body: "Robinhood, IBKR, Vanguard, Wealthsimple, Questrade, DEGIRO, Trading212, Moomoo, eToro, plus Coinbase, Kraken, and Binance. Twenty-plus out of the box, and we add more when people ask.",
   },
   {
-    title: "Read-only, always — we never hold your keys",
-    body: "Auto-sync runs through SnapTrade / Plaid via OAuth. Beacon never sees your brokerage password. We can't trade, transfer, or withdraw. Ever.",
+    title: "Read-only, always. We never hold your keys.",
+    body: "Auto-sync goes through SnapTrade (and Plaid, for some plans) via OAuth. Your brokerage password never reaches us. We also don't ask for trading permissions, which means we couldn't move money even if we wanted to.",
   },
   {
-    title: "Not a dashboard for apps that are already dead",
-    body: "Mint shut down. Personal Capital pivoted. Snowball charges for the basics. Beacon is built lean, priced fair, and independent.",
+    title: "Not a dashboard for apps that already died",
+    body: "Mint shut down. Personal Capital got pivoted into something else. Snowball charges you a subscription for a pie chart. Beacon is small, affordable, and not trying to sell to anyone.",
   },
   {
-    title: "You own your data — and can take it with you",
-    body: "One-click CSV export of everything. One-click account delete that actually deletes. No retention games, no dark patterns.",
+    title: "You own your data, and can take it with you",
+    body: "One-click CSV export of everything you have in Beacon. One-click account deletion that actually deletes, not the usual 'deactivated for 30 days then resurrected'. No dark patterns.",
   },
 ];
+
+// (FAQ data lives in `faqItems` further down, next to the <Faq /> component.)
 
 /* ------------------------------------------------------------------ Page */
 
@@ -225,17 +227,18 @@ function Manifesto() {
             question: <em className="text-fg-primary not-italic font-medium">what do I actually own?</em>
           </p>
           <p>
-            Mint shut down. Personal Capital got swallowed. Snowball wants $10/month for a pie chart. The
-            spreadsheet you keep promising to update hasn't been touched since March.
+            Mint shut down. Personal Capital got swallowed. Snowball wants $10/month for a pie chart.
+            The spreadsheet you keep promising to update hasn't been touched since March.
           </p>
           <p>
-            Beacon is the dashboard we wanted: every position, every dividend, every transaction —
-            consolidated, honest, read-only, and cheap enough that you don't have to think about it.
+            Beacon is the thing we wanted. One place that pulls in your positions, your dividends,
+            and your transactions. Read-only, so it can't do anything you didn't ask for. Cheap
+            enough that you never have to wonder whether it's worth the cost.
           </p>
         </div>
         <div className="mt-10 inline-flex items-center gap-2 text-xs text-fg-muted">
           <Sparkles className="w-4 h-4" />
-          Built by investors, for investors. Independent. Not selling your data.
+          Built by people who own more than one brokerage. We make money from subscriptions, not your data.
         </div>
       </div>
     </section>
@@ -257,8 +260,8 @@ function BeaconFlow() {
             Five steps from zero to a real portfolio view.
           </h2>
           <p className="text-fg-secondary mt-4 max-w-xl mx-auto text-base">
-            The orbit below walks through what happens — from signup to rebalancing. Hover or tap any
-            node to read the step. Nothing to memorize.
+            The orbit below walks through what happens, from signup through rebalancing. Hover or tap
+            any node to read that step. You don't have to remember any of it.
           </p>
         </div>
         <RadialOrbitalTimeline timelineData={timelineData} />
@@ -279,7 +282,7 @@ function FeatureGrid() {
             Features
           </div>
           <h2 className="text-3xl sm:text-5xl font-semibold tracking-tight leading-[1.08]">
-            Everything you'd expect. A few things everyone else missed.
+            The obvious stuff. Plus the bits other trackers never got around to.
           </h2>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
@@ -381,10 +384,10 @@ function DiffCard({ item }: { item: typeof differentiators[number] }) {
 function SecurityBand() {
   const ref = useReveal<HTMLDivElement>();
   const points = [
-    { icon: Eye, title: "Read-only access", body: "See positions and history. Can't trade, transfer, or withdraw. Ever." },
-    { icon: Lock, title: "Never your password", body: "OAuth via SnapTrade / Plaid. Credentials skip our servers entirely." },
-    { icon: ShieldCheck, title: "Bank-grade encryption", body: "TLS 1.3 in transit. AES-256 at rest. Bcrypt for passwords." },
-    { icon: CreditCard, title: "Your data, portable", body: "One-click CSV export. One-click delete that actually deletes." },
+    { icon: Eye, title: "Read-only access", body: "We can read your positions and history. We can't place trades or move money, because we never asked for that permission." },
+    { icon: Lock, title: "Never your password", body: "OAuth via SnapTrade or Plaid. Your brokerage credentials go straight from your browser to your broker, skipping our servers entirely." },
+    { icon: ShieldCheck, title: "Bank-grade encryption", body: "TLS 1.3 in transit. AES-256 at rest. Bcrypt for passwords, so nobody at Beacon can read yours." },
+    { icon: CreditCard, title: "Your data, portable", body: "One-click CSV export, and a delete button that empties the drawer instead of moving your stuff to a back room." },
   ];
   return (
     <section id="security" className="py-24 sm:py-32">
@@ -400,8 +403,9 @@ function SecurityBand() {
               Your data is too.
             </h2>
             <p className="text-fg-secondary mt-5 text-base leading-relaxed max-w-md">
-              Beacon is built to the same standards as the brokerages it connects to — and we hold
-              strictly less than they do. No passwords. No trading rights. Delete at any time.
+              Beacon is built to the same standards as the brokerages it connects to. In practice we
+              hold strictly less than they do: no passwords, no trading rights, and a one-click delete
+              that actually empties the drawer.
             </p>
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
@@ -438,24 +442,24 @@ function SecurityCard({ item }: { item: { icon: typeof Eye; title: string; body:
 
 const faqItems: { q: string; a: string }[] = [
   {
-    q: "Which brokerages does Beacon support?",
-    a: "Auto-sync covers Robinhood, Interactive Brokers, Webull, Vanguard US, E*TRADE, Wealthsimple, Public, tastytrade, Questrade, Moomoo, eToro, TD Direct Investing, DEGIRO, Trading212, AJ Bell, Zerodha, Upstox, CommSec, Stake, Bux — plus Coinbase, Kraken, and Binance for crypto. For anything else (including Fidelity and Schwab), upload a CSV export and Beacon parses it automatically.",
+    q: "Which brokerages does Beacon actually work with?",
+    a: "Auto-sync covers 20+ brokers through SnapTrade: Robinhood, Interactive Brokers, Vanguard US, Webull, E*TRADE, Wealthsimple, Public, tastytrade, Questrade, Moomoo, eToro, TD Direct Investing, DEGIRO, Trading212, AJ Bell, Zerodha, Upstox, CommSec, Stake, Bux, plus Coinbase, Kraken, and Binance for crypto. Fidelity and Schwab don't expose an open API, so for those we parse CSV exports. Same deal for anything else not on the list.",
   },
   {
-    q: "Can Beacon see my brokerage password?",
-    a: "No. Auto-sync runs through SnapTrade (or Plaid on higher tiers), which use OAuth — credentials go straight from your browser to the brokerage. Beacon never sees, stores, or has access to them.",
+    q: "Can Beacon see my password or place trades?",
+    a: "No to both. Auto-sync uses OAuth, which means your credentials travel straight from your browser to your broker. Beacon never sees them. We also don't ask for trading permissions, so we couldn't buy, sell, or move money even if we wanted to.",
   },
   {
-    q: "Can Beacon move money or place trades?",
-    a: "No. We request read-only access explicitly. Beacon can see your positions, transactions, and dividends. It can't trade, transfer, withdraw, or do anything that moves money — ever.",
+    q: "What does the Free plan actually include?",
+    a: "One brokerage via CSV upload, the core holdings and dividend views, and basic allocation. No time limit, no credit card, and nothing crippled to the point of being useless. Pro is there when you add a second account and want auto-sync.",
   },
   {
-    q: "What does the Free tier actually include?",
-    a: "One brokerage via CSV upload, the core holdings view, dividends view, and basic allocation. No time limit and no credit card. Natural upgrade path when you add a second account.",
+    q: "How accurate is the data?",
+    a: "As accurate as what your brokers send us, which is usually good but not always perfect. We re-sync in the background and flag stale accounts. For anything that matters (taxes, sale decisions), always verify against the broker directly.",
   },
   {
     q: "How does Beacon make money?",
-    a: "Subscriptions only. Pro is $8/month, Elite is $15/month. We don't sell your data. We don't show ads. We aren't an affiliate program in disguise.",
+    a: "Subscriptions, period. Pro is $8/month and Elite is $15/month. We don't sell your data, we don't show ads, and we aren't an affiliate program in disguise.",
   },
   {
     q: "Is there a refund policy?",
@@ -463,11 +467,15 @@ const faqItems: { q: string; a: string }[] = [
   },
   {
     q: "Can I cancel anytime?",
-    a: "Yes. One click in settings. Your data stays exportable for 30 days after cancel in case you change your mind.",
+    a: "One click in Settings. Your data stays exportable for 30 days in case you change your mind.",
   },
   {
-    q: "What happens if I delete my account?",
-    a: "Everything is removed — holdings, transactions, brokerage connections, and credentials with our partners. No retention, no shadow copies. A confirmation email is sent on completion.",
+    q: "What happens when I delete my account?",
+    a: "Holdings, transactions, and brokerage connections go in the first pass (within 7 days). Backups clear within 30. Anonymized error logs stick around for 90 days so we can debug. Billing records are kept as long as tax law requires.",
+  },
+  {
+    q: "Why should I trust a small app with this?",
+    a: "Fair question. The short answer: we can't hold anything valuable. We can't trade, we can't send money, and we can't read your brokerage password. The worst case in a breach is someone seeing what stocks you own, which is honestly less bad than what already leaks out of a typical email inbox.",
   },
 ];
 
@@ -485,7 +493,7 @@ function Faq() {
             Questions people actually ask.
           </h2>
           <p className="text-fg-secondary mt-4 text-base">
-            Plain answers. If something's missing, drop us a line.
+            Straight answers. If something's missing, email us and we'll add it.
           </p>
         </div>
         <div className="rounded-xl border border-border-subtle bg-bg-base divide-y divide-border-subtle overflow-hidden">
@@ -569,7 +577,8 @@ function FinalCta() {
           <span className="text-fg-secondary">In under five minutes.</span>
         </h2>
         <p className="text-fg-secondary mt-5 text-base sm:text-lg">
-          Free forever for one brokerage. No card, no catch, no data selling.
+          Free forever for one brokerage. No credit card, no trial-to-paid gotcha, and nobody's
+          reselling your holdings to a data broker.
         </p>
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Link
@@ -629,9 +638,9 @@ function Footer() {
         </div>
       </div>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-8 text-[11px] text-fg-muted/80 text-center sm:text-left">
-        Beacon is a portfolio tracking tool — not a registered broker-dealer or investment advisor.
-        Not financial advice. <Bell className="inline w-3 h-3 align-[-2px]" /> Price alerts, dividend
-        forecasts and allocation drift are informational only.
+        Beacon is a portfolio tracking tool, not a registered broker-dealer or investment advisor.
+        Nothing here is financial advice. <Bell className="inline w-3 h-3 align-[-2px]" /> Price alerts,
+        dividend forecasts, and allocation drift are informational.
       </div>
     </footer>
   );

@@ -61,8 +61,8 @@ export function AnimatedHero() {
             </h1>
 
             <p className="text-lg md:text-xl leading-relaxed tracking-tight text-fg-secondary max-w-2xl text-center">
-              Beacon pulls every position, dividend, and transaction from 20+ brokerages into one
-              clean dashboard. Don't see yours? Upload a CSV — we parse every major format.
+              Beacon pulls your positions, dividends, and transactions from 20+ brokerages into one
+              dashboard. Broker not on the list? Upload a CSV and we'll parse it.
             </p>
           </div>
           <div className="flex flex-row gap-3 flex-wrap justify-center">
