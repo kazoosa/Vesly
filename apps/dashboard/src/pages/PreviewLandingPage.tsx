@@ -1,8 +1,9 @@
 import {
   UserPlus, Link2, LayoutDashboard, Coins, Scale,
   ShieldCheck, Upload, PieChart, LineChart, Bell, RefreshCw,
-  Lock, Eye, CreditCard, Sparkles, ArrowRight, Check,
+  Lock, Eye, CreditCard, Sparkles, ArrowRight, Check, Plus,
 } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatedHero } from "../components/ui/animated-hero";
 import { AuroraBackground } from "../components/ui/aurora-background";
@@ -127,6 +128,7 @@ export function PreviewLandingPage() {
       <FeatureGrid />
       <Differentiators />
       <SecurityBand />
+      <Faq />
       <FinalCta />
       <Footer />
     </div>
@@ -159,6 +161,7 @@ function NavBar() {
           <a href="#flow" className="hover:text-fg-primary transition-colors">How it works</a>
           <a href="#features" className="hover:text-fg-primary transition-colors">Features</a>
           <a href="#security" className="hover:text-fg-primary transition-colors">Security</a>
+          <a href="#faq" className="hover:text-fg-primary transition-colors">FAQ</a>
         </nav>
         <div className="flex items-center gap-2">
           <Link
@@ -427,6 +430,118 @@ function SecurityCard({ item }: { item: { icon: typeof Eye; title: string; body:
         <h4 className="text-sm font-semibold tracking-tight text-fg-primary">{item.title}</h4>
       </div>
       <p className="text-sm text-fg-secondary leading-relaxed">{item.body}</p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- FAQ */
+
+const faqItems: { q: string; a: string }[] = [
+  {
+    q: "Which brokerages does Beacon support?",
+    a: "Auto-sync covers Robinhood, Interactive Brokers, Webull, Vanguard US, E*TRADE, Wealthsimple, Public, tastytrade, Questrade, Moomoo, eToro, TD Direct Investing, DEGIRO, Trading212, AJ Bell, Zerodha, Upstox, CommSec, Stake, Bux — plus Coinbase, Kraken, and Binance for crypto. For anything else (including Fidelity and Schwab), upload a CSV export and Beacon parses it automatically.",
+  },
+  {
+    q: "Can Beacon see my brokerage password?",
+    a: "No. Auto-sync runs through SnapTrade (or Plaid on higher tiers), which use OAuth — credentials go straight from your browser to the brokerage. Beacon never sees, stores, or has access to them.",
+  },
+  {
+    q: "Can Beacon move money or place trades?",
+    a: "No. We request read-only access explicitly. Beacon can see your positions, transactions, and dividends. It can't trade, transfer, withdraw, or do anything that moves money — ever.",
+  },
+  {
+    q: "What does the Free tier actually include?",
+    a: "One brokerage via CSV upload, the core holdings view, dividends view, and basic allocation. No time limit and no credit card. Natural upgrade path when you add a second account.",
+  },
+  {
+    q: "How does Beacon make money?",
+    a: "Subscriptions only. Pro is $8/month, Elite is $15/month. We don't sell your data. We don't show ads. We aren't an affiliate program in disguise.",
+  },
+  {
+    q: "Is there a refund policy?",
+    a: "Yes. 14-day full refund on any paid plan, no questions asked.",
+  },
+  {
+    q: "Can I cancel anytime?",
+    a: "Yes. One click in settings. Your data stays exportable for 30 days after cancel in case you change your mind.",
+  },
+  {
+    q: "What happens if I delete my account?",
+    a: "Everything is removed — holdings, transactions, brokerage connections, and credentials with our partners. No retention, no shadow copies. A confirmation email is sent on completion.",
+  },
+];
+
+function Faq() {
+  const ref = useReveal<HTMLDivElement>();
+  const [open, setOpen] = useState<number | null>(0);
+  return (
+    <section id="faq" className="py-24 sm:py-32 bg-bg-overlay/40 border-y border-border-subtle">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6">
+        <div ref={ref} className="reveal text-center mb-12">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-muted mb-3">
+            FAQ
+          </div>
+          <h2 className="text-3xl sm:text-5xl font-semibold tracking-tight leading-[1.08]">
+            Questions people actually ask.
+          </h2>
+          <p className="text-fg-secondary mt-4 text-base">
+            Plain answers. If something's missing, drop us a line.
+          </p>
+        </div>
+        <div className="rounded-xl border border-border-subtle bg-bg-base divide-y divide-border-subtle overflow-hidden">
+          {faqItems.map((item, i) => {
+            const isOpen = open === i;
+            return (
+              <FaqRow
+                key={i}
+                item={item}
+                isOpen={isOpen}
+                onToggle={() => setOpen(isOpen ? null : i)}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FaqRow({
+  item,
+  isOpen,
+  onToggle,
+}: {
+  item: { q: string; a: string };
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={isOpen}
+        className="w-full flex items-center justify-between gap-4 text-left px-5 sm:px-6 py-5 hover:bg-bg-hover/60 transition-colors group"
+      >
+        <span className="text-sm sm:text-base font-medium text-fg-primary">{item.q}</span>
+        <span
+          className={`flex-shrink-0 w-7 h-7 rounded-full border border-border-strong flex items-center justify-center text-fg-secondary transition-transform duration-300 ${
+            isOpen ? "rotate-45 bg-fg-primary text-bg-base border-fg-primary" : "group-hover:text-fg-primary"
+          }`}
+        >
+          <Plus className="w-4 h-4" strokeWidth={2.2} />
+        </span>
+      </button>
+      <div
+        className="grid transition-[grid-template-rows] duration-300 ease-out"
+        style={{ gridTemplateRows: isOpen ? "1fr" : "0fr" }}
+      >
+        <div className="overflow-hidden">
+          <p className="px-5 sm:px-6 pb-5 text-sm text-fg-secondary leading-relaxed max-w-2xl">
+            {item.a}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
