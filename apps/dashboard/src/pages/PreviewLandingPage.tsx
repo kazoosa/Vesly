@@ -4,13 +4,13 @@ import {
   Lock, Eye, CreditCard, ArrowUpRight, ArrowRight, Check, Plus, X,
   TrendingUp, Menu,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import RadialOrbitalTimeline, { type TimelineItem } from "../components/ui/radial-orbital-timeline";
 import { useReveal } from "../lib/useReveal";
 import { BeaconMark } from "../components/BeaconMark";
 import { APP_NAME } from "../lib/brand";
-import { brokerLogos, BrokerWordmark } from "../components/BrokerLogos";
+import { BrokerMarquee as BrokerMarqueeRow } from "../components/BrokerMarquee";
 
 /* ==========================================================================
    Launch page — refined, quiet, physical.
@@ -85,6 +85,17 @@ const faqItems: { q: string; a: string }[] = [
 /* ============================================================= Page shell */
 
 export function PreviewLandingPage() {
+  // Warm up the backend the moment someone lands, so that by the time they
+  // click "Try the demo" the Koyeb free instance is already out of its
+  // cold-start penalty. Fire-and-forget, ~1KB response.
+  useEffect(() => {
+    const API = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+    if (!API) return;
+    const ctrl = new AbortController();
+    fetch(`${API}/health`, { signal: ctrl.signal }).catch(() => { /* ignore */ });
+    return () => ctrl.abort();
+  }, []);
+
   return (
     <div className="stripe-shell min-h-screen">
       <NavBar />
@@ -207,9 +218,9 @@ function Hero() {
           </h1>
 
           <p className="mt-6 max-w-[560px] text-[17px] leading-[1.55] text-[var(--stripe-ink-muted)]">
-            Beacon pulls your positions, dividends, and transactions from 20+ brokerages into one
-            clean view. Robinhood, Vanguard, IBKR, Coinbase, and the long tail. Broker not on the
-            list? Upload a CSV.
+            Beacon pulls in your holdings, dividends, and transactions from whatever brokerages you
+            already use. Robinhood, Vanguard, IBKR, Coinbase, and about twenty more. Missing one?
+            Upload a CSV and we'll parse it.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -423,23 +434,15 @@ function AllocationMock() {
 /* ---------------------------------------------------------- Broker marquee */
 
 function BrokerMarquee() {
-  // Duplicate so -50% translate loops seamlessly
-  const items = [...brokerLogos, ...brokerLogos];
   return (
     <section className="py-10 border-y border-[var(--stripe-hairline)] bg-white">
       <div className="max-w-[1111px] mx-auto px-6">
         <div className="text-center text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-6">
-          Auto-syncs with
+          Works with
         </div>
-        <div className="stripe-marquee-mask overflow-hidden">
-          <div className="stripe-marquee-track">
-            {items.map((logo, i) => (
-              <BrokerWordmark key={`${logo.name}-${i}`} logo={logo} />
-            ))}
-          </div>
-        </div>
+        <BrokerMarqueeRow />
         <div className="mt-6 text-center text-[12px] text-[var(--stripe-ink-muted)]">
-          Plus anything with a CSV export — Fidelity, Schwab, and the rest.
+          Plus anything with a CSV export. Drag the row to scroll.
         </div>
       </div>
     </section>
@@ -453,7 +456,7 @@ function Manifesto() {
   return (
     <section id="manifesto" className="py-24 sm:py-32">
       <div ref={ref} className="reveal max-w-[1111px] mx-auto px-6">
-        <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-4">
+        <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-4">
           Why Beacon
         </div>
         <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)] max-w-[900px]">
@@ -487,7 +490,7 @@ function BeaconFlow() {
     <section id="flow" className="py-24 sm:py-32 bg-[var(--stripe-surface-sunk)] border-y border-[var(--stripe-hairline)]">
       <div className="max-w-[1111px] mx-auto px-6">
         <div ref={ref} className="reveal text-center mb-12">
-          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-3">
             Beacon flow
           </div>
           <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)] max-w-[900px] mx-auto">
@@ -512,12 +515,12 @@ function FeatureGrid() {
     <section id="features" className="py-24 sm:py-32">
       <div className="max-w-[1111px] mx-auto px-6">
         <div ref={ref} className="reveal mb-14 max-w-[780px]">
-          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-3">
             Features
           </div>
           <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)]">
-            The obvious stuff.{" "}
-            <span className="text-[var(--stripe-ink-muted)]">Plus the bits other trackers never got around to.</span>
+            The obvious stuff,{" "}
+            <span className="text-[var(--stripe-ink-muted)]">done properly. Plus a couple of things other trackers never got around to.</span>
           </h2>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
@@ -569,7 +572,7 @@ function Differentiators() {
     <section className="py-24 sm:py-32 bg-[var(--stripe-surface-sunk)] border-y border-[var(--stripe-hairline)]">
       <div className="max-w-[1111px] mx-auto px-6">
         <div ref={ref} className="reveal max-w-[900px] mb-12">
-          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-3">
             What makes Beacon different
           </div>
           <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)]">
@@ -624,7 +627,7 @@ function SecurityBand() {
     <section id="security" className="py-24 sm:py-32">
       <div ref={ref} className="reveal max-w-[1111px] mx-auto px-6 grid lg:grid-cols-[1fr_1.4fr] gap-10 lg:gap-16 items-start">
         <div>
-          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-3">
             Security
           </div>
           <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)]">
@@ -672,7 +675,7 @@ function Pricing() {
     <section id="pricing" className="py-24 sm:py-32 bg-[var(--stripe-surface-sunk)] border-y border-[var(--stripe-hairline)]">
       <div className="max-w-[1111px] mx-auto px-6">
         <div ref={ref} className="reveal text-center mb-14 max-w-[640px] mx-auto">
-          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-3">
             Pricing
           </div>
           <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)]">
@@ -778,7 +781,7 @@ function Faq() {
     <section id="faq" className="py-24 sm:py-32">
       <div className="max-w-[880px] mx-auto px-6">
         <div ref={ref} className="reveal text-center mb-12">
-          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-accent)] mb-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] font-mono text-[var(--stripe-ink-faint)] mb-3">
             FAQ
           </div>
           <h2 className="text-[34px] sm:text-[52px] font-bold tracking-[-0.02em] leading-[1.06] text-[var(--stripe-ink)]">
@@ -845,23 +848,30 @@ function FinalCta() {
   return (
     <section className="py-16 sm:py-24">
       <div ref={ref} className="reveal max-w-[1111px] mx-auto px-6">
-        <div className="relative overflow-hidden rounded-[28px] stripe-cta-bg text-white">
-          <div className="relative px-8 sm:px-16 py-16 sm:py-24 text-center">
-            <h2 className="text-[34px] sm:text-[60px] font-bold tracking-[-0.02em] leading-[1.04]">
+        {/* Light card. One tasteful violet corner wash, otherwise white. */}
+        <div
+          className="relative overflow-hidden rounded-[28px] border border-[var(--stripe-hairline)] bg-white"
+          style={{
+            backgroundImage:
+              "radial-gradient(60% 80% at 100% 0%, rgba(99,91,255,0.10) 0%, transparent 55%), radial-gradient(40% 60% at 0% 100%, rgba(251,118,250,0.08) 0%, transparent 55%)",
+          }}
+        >
+          <div className="relative px-8 sm:px-16 py-16 sm:py-20 text-center">
+            <h2 className="text-[32px] sm:text-[56px] font-bold tracking-[-0.02em] leading-[1.04] text-[var(--stripe-ink)]">
               Start tracking your whole portfolio.
               <br />
-              <span className="opacity-70">In under five minutes.</span>
+              <span className="text-[var(--stripe-ink-muted)]">In under five minutes.</span>
             </h2>
-            <p className="mt-5 text-[15px] sm:text-[17px] text-white/75 max-w-[560px] mx-auto">
-              Free forever for one brokerage. No credit card, no trial-to-paid gotcha, and nobody's
+            <p className="mt-5 text-[15px] sm:text-[17px] text-[var(--stripe-ink-muted)] max-w-[560px] mx-auto leading-[1.55]">
+              Free for one brokerage. No credit card, no drip-to-paid trial, and nobody's
               reselling your holdings to a data broker.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-              <Link to="/register" className="inline-flex items-center gap-1.5 rounded-full bg-white text-[var(--stripe-ink)] font-medium px-5 h-11 text-[14px] hover:bg-white/90 transition-colors">
+              <Link to="/register" className="stripe-btn-primary inline-flex items-center gap-1.5 text-[14px]">
                 Get started free
                 <ArrowRight className="w-4 h-4" />
               </Link>
-              <Link to="/demo" className="inline-flex items-center gap-1.5 rounded-full border border-white/30 text-white font-medium px-5 h-11 text-[14px] hover:bg-white/10 transition-colors">
+              <Link to="/demo" className="stripe-btn-ghost inline-flex items-center gap-1.5 text-[14px]">
                 Try the demo
                 <ArrowUpRight className="w-4 h-4" />
               </Link>

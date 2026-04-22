@@ -3,25 +3,47 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 
+const DEMO_EMAIL = "demo@finlink.dev";
+
 export function SettingsPage() {
   const { developer } = useAuth();
   if (!developer) return null;
+  const isDemo = developer.email === DEMO_EMAIL;
 
   return (
     <div className="space-y-6 max-w-2xl">
       <h1 className="text-xl font-semibold text-fg-primary">Settings</h1>
-      <ProfileSection />
-      <SecuritySection />
+      {isDemo && <DemoNotice />}
+      <ProfileSection isDemo={isDemo} />
+      <SecuritySection isDemo={isDemo} />
       <AppearanceSection />
-      <DangerSection />
+      <DangerSection isDemo={isDemo} />
       <AppInfoSection />
+    </div>
+  );
+}
+
+/* ---------- Demo notice ---------- */
+
+function DemoNotice() {
+  return (
+    <div className="rounded-xl border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-4 text-[13px] leading-relaxed">
+      <div className="font-semibold text-amber-900 dark:text-amber-100 mb-1">
+        You're on the demo account
+      </div>
+      <p className="text-amber-900/90 dark:text-amber-100/90">
+        This is a shared read-only account, so profile details, password, and
+        deletion are disabled here. Theme changes still work, and anything else
+        you do in the app is real-looking but never persisted beyond this
+        session.
+      </p>
     </div>
   );
 }
 
 /* ---------- Profile ---------- */
 
-function ProfileSection() {
+function ProfileSection({ isDemo }: { isDemo: boolean }) {
   const { developer, updateProfile } = useAuth();
   const [name, setName] = useState(developer?.name ?? "");
   const [busy, setBusy] = useState(false);
@@ -30,6 +52,7 @@ function ProfileSection() {
   const [fields, setFields] = useState<Record<string, string>>({});
 
   async function save() {
+    if (isDemo) return;
     setBusy(true);
     setOk(false);
     setErr(null);
@@ -49,20 +72,26 @@ function ProfileSection() {
   return (
     <Section title="Profile">
       <Field label="Name" error={fields.name}>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={isDemo}
+        />
       </Field>
       <Field label="Email">
         <input className="input" value={developer?.email ?? ""} disabled />
         <div className="text-[11px] text-fg-muted mt-1">
-          Email can't be changed (yet).
+          {isDemo ? "The demo email is locked." : "Email can't be changed (yet)."}
         </div>
       </Field>
       {err && <div className="text-sm text-rose-400">{err}</div>}
       {ok && <div className="text-sm text-emerald-400">Saved.</div>}
       <button
         className="btn-primary"
-        disabled={busy || !name || name === developer?.name}
+        disabled={isDemo || busy || !name || name === developer?.name}
         onClick={save}
+        title={isDemo ? "Disabled on the demo account" : undefined}
       >
         {busy ? "Saving…" : "Save changes"}
       </button>
@@ -72,7 +101,7 @@ function ProfileSection() {
 
 /* ---------- Security ---------- */
 
-function SecuritySection() {
+function SecuritySection({ isDemo }: { isDemo: boolean }) {
   const { changePassword, signOutAll } = useAuth();
   const nav = useNavigate();
   const [cur, setCur] = useState("");
@@ -83,6 +112,7 @@ function SecuritySection() {
   const [fields, setFields] = useState<Record<string, string>>({});
 
   async function submit() {
+    if (isDemo) return;
     setBusy(true);
     setOk(false);
     setErr(null);
@@ -102,6 +132,11 @@ function SecuritySection() {
   }
 
   async function signOutEverywhere() {
+    if (isDemo) {
+      // Just sign the demo user out locally. They can re-enter via /demo.
+      nav("/login");
+      return;
+    }
     if (!confirm("Sign out of every device? You'll need to log back in here too.")) return;
     await signOutAll();
     nav("/login");
@@ -115,6 +150,7 @@ function SecuritySection() {
           type="password"
           value={cur}
           onChange={(e) => setCur(e.target.value)}
+          disabled={isDemo}
         />
       </Field>
       <Field label="New password" error={fields.new_password} hint="At least 8 characters">
@@ -123,6 +159,7 @@ function SecuritySection() {
           type="password"
           value={next}
           onChange={(e) => setNext(e.target.value)}
+          disabled={isDemo}
         />
       </Field>
       {err && <div className="text-sm text-rose-400">{err}</div>}
@@ -134,13 +171,14 @@ function SecuritySection() {
       <div className="flex items-center gap-2">
         <button
           className="btn-primary"
-          disabled={busy || !cur || next.length < 8}
+          disabled={isDemo || busy || !cur || next.length < 8}
           onClick={submit}
+          title={isDemo ? "Disabled on the demo account" : undefined}
         >
           {busy ? "Updating…" : "Change password"}
         </button>
         <button className="btn-ghost" onClick={signOutEverywhere}>
-          Sign out of all devices
+          {isDemo ? "Sign out" : "Sign out of all devices"}
         </button>
       </div>
     </Section>
@@ -184,7 +222,7 @@ function AppearanceSection() {
 
 /* ---------- Danger zone ---------- */
 
-function DangerSection() {
+function DangerSection({ isDemo }: { isDemo: boolean }) {
   const { developer, deleteAccount } = useAuth();
   const nav = useNavigate();
   const [confirm, setConfirm] = useState("");
@@ -193,6 +231,7 @@ function DangerSection() {
   const matches = confirm.trim().toLowerCase() === (developer?.email ?? "").toLowerCase();
 
   async function doDelete() {
+    if (isDemo) return;
     if (!matches) return;
     if (!window.confirm("This deletes your account and all your data. Really?")) return;
     setBusy(true);
@@ -209,25 +248,34 @@ function DangerSection() {
 
   return (
     <Section title="Danger zone" tone="danger">
-      <p className="text-sm text-fg-secondary">
-        Deleting your account removes all your connected brokerages, holdings, transactions, and
-        history. This cannot be undone.
-      </p>
-      <Field
-        label={`Type your email (${developer?.email}) to confirm`}
-        error={err ?? undefined}
-      >
-        <input
-          className="input"
-          placeholder={developer?.email}
-          value={confirm}
-          onChange={(e) => setConfirm(e.target.value)}
-          autoComplete="off"
-        />
-      </Field>
-      <button className="btn-danger" disabled={!matches || busy} onClick={doDelete}>
-        {busy ? "Deleting…" : "Delete my account"}
-      </button>
+      {isDemo ? (
+        <p className="text-sm text-fg-secondary">
+          The demo account is shared — deletion is disabled. Close the tab any
+          time; your session lives only in this browser.
+        </p>
+      ) : (
+        <>
+          <p className="text-sm text-fg-secondary">
+            Deleting your account removes all your connected brokerages, holdings, transactions, and
+            history. This cannot be undone.
+          </p>
+          <Field
+            label={`Type your email (${developer?.email}) to confirm`}
+            error={err ?? undefined}
+          >
+            <input
+              className="input"
+              placeholder={developer?.email}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              autoComplete="off"
+            />
+          </Field>
+          <button className="btn-danger" disabled={!matches || busy} onClick={doDelete}>
+            {busy ? "Deleting…" : "Delete my account"}
+          </button>
+        </>
+      )}
     </Section>
   );
 }

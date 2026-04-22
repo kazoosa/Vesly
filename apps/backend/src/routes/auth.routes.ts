@@ -21,6 +21,30 @@ import { requireDeveloper } from "../middleware/authJwt.js";
 const router = Router();
 
 /**
+ * The demo account is shared and deliberately locked for profile-level
+ * mutations. The frontend hides the relevant UI, but we also enforce it
+ * here so a DevTools user can't bypass it.
+ */
+const DEMO_EMAIL = "demo@finlink.dev";
+
+async function isDemoAccount(developerId: string): Promise<boolean> {
+  const dev = await prisma.developer.findUnique({
+    where: { id: developerId },
+    select: { email: true },
+  });
+  return dev?.email === DEMO_EMAIL;
+}
+
+function demoLockedResponse() {
+  return {
+    error_type: "FORBIDDEN" as const,
+    error_code: "DEMO_ACCOUNT_LOCKED",
+    error_message:
+      "The demo account is shared — profile, password, and deletion are disabled here.",
+  };
+}
+
+/**
  * @openapi
  * /api/auth/register:
  *   post:
@@ -131,6 +155,9 @@ router.get("/me", requireDeveloper, async (req, res, next) => {
  */
 router.patch("/me", requireDeveloper, async (req, res, next) => {
   try {
+    if (await isDemoAccount(req.developerId!)) {
+      return res.status(403).json(demoLockedResponse());
+    }
     const input = updateProfileSchema.parse(req.body);
     const dev = await prisma.developer.update({
       where: { id: req.developerId! },
@@ -150,6 +177,9 @@ router.patch("/me", requireDeveloper, async (req, res, next) => {
  */
 router.post("/change-password", requireDeveloper, async (req, res, next) => {
   try {
+    if (await isDemoAccount(req.developerId!)) {
+      return res.status(403).json(demoLockedResponse());
+    }
     const input = changePasswordSchema.parse(req.body);
     const dev = await prisma.developer.findUnique({ where: { id: req.developerId! } });
     if (!dev) throw Errors.unauthorized();
@@ -194,6 +224,9 @@ router.post("/sign-out-all", requireDeveloper, async (req, res, next) => {
  */
 router.delete("/me", requireDeveloper, async (req, res, next) => {
   try {
+    if (await isDemoAccount(req.developerId!)) {
+      return res.status(403).json(demoLockedResponse());
+    }
     const input = deleteAccountSchema.parse(req.body);
     const dev = await prisma.developer.findUnique({ where: { id: req.developerId! } });
     if (!dev) throw Errors.unauthorized();

@@ -1,15 +1,16 @@
 # Beacon
 
-A dark-mode portfolio tracker that pulls your holdings, transactions, and
-dividends from every brokerage you own into one dashboard. Auto-sync with
-20+ brokers via SnapTrade, CSV fallback for anything else.
+A portfolio tracker that pulls your holdings, transactions, and
+dividends from every brokerage you own into one dashboard. Auto-sync
+with 20+ brokers via SnapTrade, CSV fallback for anything else.
 
 **Live:**
 - Dashboard — https://vesly-dashboard.vercel.app
 - Status — https://beacon-three-liard.vercel.app
+- Changelog — [CHANGELOG.md](./CHANGELOG.md)
 
 **Two ways to try it:**
-- **Demo account** (`demo@finlink.dev` / `demo1234`) — pre-seeded with realistic mock data. There's a one-click "Try the demo account" button on the sign-in page.
+- **Demo** — hit `/demo` on the live site (or click "Try the demo" on the landing). It auto-signs you into a read-only account pre-seeded with realistic mock data. Nothing you do in there touches real money.
 - **Your real accounts** — register, then connect via [SnapTrade's free tier](https://snaptrade.com) (5 connections, no credit card).
 
 ---
@@ -62,7 +63,7 @@ services below have genuine free tiers that don't require payment info.
 
    Redeploy.
 
-9. Open the dashboard URL, hit "Try the demo account" on the sign-in page. Close your laptop. Open the URL from your phone. It works.
+9. Open the dashboard URL, hit "Try the demo" on the landing (or visit `/demo` directly). Close your laptop. Open the URL from your phone. It works.
 
 ### Keeping costs at zero
 - **Neon**: 3GB storage, free forever as long as you stay under it.
@@ -98,48 +99,32 @@ If you don't set the SnapTrade env vars, only the demo account works. The Connec
 
 ## Local dev
 
-```bash
-cp .env.example .env
-docker compose up --build
-```
-
-That boots:
-
-| Service   | URL                                 |
-|-----------|-------------------------------------|
-| Backend   | http://localhost:3001               |
-| Swagger   | http://localhost:3001/api/docs      |
-| Dashboard | http://localhost:5174               |
-| Link UI   | http://localhost:5175               |
-| Postgres  | localhost:5432 (finlink/finlink)    |
-| Redis     | localhost:6379                      |
-
-On first boot the backend runs Prisma migrations and seeds 20 institutions, ~15 securities, the demo developer, and two pre-connected items.
-
-**Demo credentials**
-
-```
-Email:    demo@finlink.dev
-Password: demo1234
-```
-
-The first-boot log prints the seeded `client_id` and `client_secret` — copy the secret, it's only shown once.
-
-### Without Docker
+Requires a local Postgres + Redis. Copy `.env.example` to `.env` and
+fill in the connection strings, then:
 
 ```bash
 pnpm install
-# requires Postgres + Redis running locally
-cp .env.example .env
 pnpm --filter @finlink/backend prisma migrate dev
 pnpm --filter @finlink/backend seed
-pnpm dev    # runs backend + both UIs in parallel
+pnpm dev    # runs the backend + both UIs in parallel
 ```
 
-Integration tests (needs `postgres-test` on port 5433):
+Default ports when you're running everything locally:
+
+- Backend — `http://localhost:3001`
+- Swagger — `http://localhost:3001/api/docs`
+- Dashboard — `http://localhost:5174`
+- Link UI — `http://localhost:5175`
+
+The seed creates a demo developer with pre-connected institutions and
+realistic holdings/transactions. The first-boot log prints the seeded
+`client_id` and `client_secret` — copy the secret, it's only shown
+once.
+
+Integration tests (need a separate test Postgres; check the root
+`docker-compose.yml` for a `postgres-test` service if you want one):
 
 ```bash
-docker compose --profile test up -d postgres-test
 pnpm test
 ```
 
