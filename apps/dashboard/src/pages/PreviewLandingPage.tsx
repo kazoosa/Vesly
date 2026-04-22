@@ -458,14 +458,14 @@ function FinalCta() {
         </p>
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Link
-            to="/register"
+            to="/preview-signin"
             className="inline-flex items-center gap-2 h-12 px-6 rounded-md bg-fg-primary text-bg-base font-medium hover:bg-fg-primary/90 transition-colors group"
           >
             Get started free
             <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
           </Link>
           <Link
-            to="/login"
+            to="/preview-signin"
             className="inline-flex items-center h-12 px-6 rounded-md border border-border-strong text-fg-primary font-medium hover:bg-bg-hover transition-colors"
           >
             Try the demo
