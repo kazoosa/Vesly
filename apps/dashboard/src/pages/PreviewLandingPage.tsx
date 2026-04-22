@@ -165,13 +165,13 @@ function NavBar() {
         </nav>
         <div className="flex items-center gap-2">
           <Link
-            to="/login"
+            to="/preview-signin"
             className="hidden sm:inline-flex items-center h-9 px-3 rounded-md text-sm text-fg-secondary hover:text-fg-primary hover:bg-bg-hover transition-colors"
           >
             Sign in
           </Link>
           <Link
-            to="/register"
+            to="/preview-signin"
             className="inline-flex items-center h-9 px-4 rounded-md bg-fg-primary text-bg-base text-sm font-medium hover:bg-fg-primary/90 transition-colors"
           >
             Get started
