@@ -408,3 +408,153 @@ button:focus-visible,
   background: rgb(var(--fg-primary) / 0.15);
   color: rgb(var(--fg-primary));
 }
+
+/* ============================================================
+   Stripe-inspired launch page layer
+   Bright, monospace, purple-accented visual language used for
+   the marketing landing only — the app shell stays monochrome.
+   ============================================================ */
+
+:root {
+  --stripe-accent: #635bff;         /* Stripe-style violet */
+  --stripe-accent-strong: #5246d7;
+  --stripe-accent-soft: #ece9ff;
+  --stripe-ink: #0a2540;
+  --stripe-ink-muted: #425466;
+  --stripe-hairline: #e3e8ee;
+  --stripe-surface: #ffffff;
+  --stripe-surface-sunk: #f6f9fc;
+}
+
+/* The famous Stripe "aurora" hero wash — layered radial gradients that
+   bleed cyan → green → yellow → pink → violet across the top of the page.
+   Pure CSS, GPU-friendly, no blur filter. */
+.stripe-mesh {
+  background-color: #f6f9fc;
+  background-image:
+    radial-gradient(at 4% -10%,  rgba(17, 239, 227, 0.55) 0px, transparent 45%),
+    radial-gradient(at 30% -20%, rgba(99, 91, 255, 0.55) 0px, transparent 45%),
+    radial-gradient(at 60% -10%, rgba(251, 118, 250, 0.45) 0px, transparent 45%),
+    radial-gradient(at 88% -20%, rgba(255, 204, 85, 0.55) 0px, transparent 45%),
+    radial-gradient(at 100% 30%, rgba(83, 58, 253, 0.30) 0px, transparent 50%),
+    radial-gradient(at 0% 40%,   rgba(17, 239, 227, 0.25) 0px, transparent 55%);
+}
+
+/* A quieter version for inside CTAs — same palette, darker bed */
+.stripe-mesh-dark {
+  background-color: #0a2540;
+  background-image:
+    radial-gradient(at 10% 0%,   rgba(99, 91, 255, 0.6) 0px, transparent 55%),
+    radial-gradient(at 50% 10%,  rgba(251, 118, 250, 0.4) 0px, transparent 55%),
+    radial-gradient(at 90% 0%,   rgba(17, 239, 227, 0.45) 0px, transparent 55%),
+    radial-gradient(at 80% 100%, rgba(255, 204, 85, 0.3) 0px, transparent 55%);
+}
+
+/* Diagonal slice used on the hero — angles the gradient out like Stripe */
+.stripe-mesh-angled {
+  clip-path: polygon(0 0, 100% 0, 100% 86%, 0 100%);
+}
+
+/* Gradient text for accent words in big headings */
+.stripe-gradient-text {
+  background: linear-gradient(90deg, #635bff 0%, #fb76fa 50%, #11efe3 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* A thin gradient hairline used as a card accent */
+.stripe-gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #635bff, #fb76fa 50%, #11efe3);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Purple CTA button */
+.stripe-btn-primary {
+  background: var(--stripe-accent);
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 12px 20px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  box-shadow:
+    0 1px 1px rgba(10, 37, 64, 0.08),
+    0 2px 5px rgba(99, 91, 255, 0.28);
+  transition: transform 150ms cubic-bezier(.25,1,.5,1),
+              box-shadow 150ms cubic-bezier(.25,1,.5,1),
+              background 150ms cubic-bezier(.25,1,.5,1);
+}
+.stripe-btn-primary:hover {
+  background: var(--stripe-accent-strong);
+  transform: translateY(-1px);
+  box-shadow:
+    0 1px 1px rgba(10, 37, 64, 0.08),
+    0 6px 14px rgba(99, 91, 255, 0.32);
+}
+.stripe-btn-primary:active { transform: translateY(0); }
+
+/* Ghost / secondary */
+.stripe-btn-ghost {
+  background: transparent;
+  color: var(--stripe-ink);
+  border: 1px solid rgba(10, 37, 64, 0.14);
+  border-radius: 999px;
+  padding: 12px 20px;
+  font-weight: 500;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.stripe-btn-ghost:hover {
+  background: rgba(10, 37, 64, 0.04);
+  border-color: rgba(10, 37, 64, 0.28);
+}
+
+/* Small chip — used for feature category pills */
+.stripe-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: var(--stripe-accent-soft);
+  color: var(--stripe-accent-strong);
+}
+
+/* Card shell — clean white with hairline + soft Stripe-style shadow */
+.stripe-card {
+  background: #ffffff;
+  border: 1px solid var(--stripe-hairline);
+  border-radius: 16px;
+  box-shadow:
+    0 0 0 1px rgba(10, 37, 64, 0.02),
+    0 2px 4px rgba(10, 37, 64, 0.03),
+    0 12px 24px -12px rgba(10, 37, 64, 0.08);
+  transition: transform 180ms cubic-bezier(.25,1,.5,1),
+              box-shadow 180ms cubic-bezier(.25,1,.5,1);
+}
+.stripe-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px rgba(10, 37, 64, 0.03),
+    0 4px 8px rgba(10, 37, 64, 0.04),
+    0 20px 40px -16px rgba(10, 37, 64, 0.14);
+}
+
+/* Force light palette on the marketing shell regardless of app theme */
+.stripe-shell {
+  color-scheme: light;
+  background: var(--stripe-surface);
+  color: var(--stripe-ink);
+}
+.stripe-shell .stripe-muted { color: var(--stripe-ink-muted); }

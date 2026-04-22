@@ -36,6 +36,7 @@ export default {
       fontFamily: {
         sans: ["Geist", "Inter", "system-ui", "-apple-system", "sans-serif"],
         mono: ["JetBrains Mono", "ui-monospace", "SF Mono", "Menlo", "monospace"],
+        display: ["Source Code Pro", "JetBrains Mono", "ui-monospace", "monospace"],
       },
       boxShadow: {
         card: "var(--shadow-card)",
