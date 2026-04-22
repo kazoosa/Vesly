@@ -1,7 +1,7 @@
 import {
   UserPlus, Link2, LayoutDashboard, Coins, Scale,
   ShieldCheck, Upload, PieChart, LineChart, Bell, RefreshCw,
-  Lock, Eye, CreditCard, Sparkles, ArrowRight, Check, Plus,
+  Lock, Eye, CreditCard, Sparkles, ArrowRight, Check, Plus, X,
 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -129,6 +129,7 @@ export function PreviewLandingPage() {
       <FeatureGrid />
       <Differentiators />
       <SecurityBand />
+      <Pricing />
       <Faq />
       <FinalCta />
       <Footer />
@@ -150,6 +151,7 @@ function NavBar() {
           <a href="#manifesto" className="hover:text-fg-primary transition-colors">Why Beacon</a>
           <a href="#flow" className="hover:text-fg-primary transition-colors">How it works</a>
           <a href="#features" className="hover:text-fg-primary transition-colors">Features</a>
+          <a href="#pricing" className="hover:text-fg-primary transition-colors">Pricing</a>
           <a href="#security" className="hover:text-fg-primary transition-colors">Security</a>
           <a href="#faq" className="hover:text-fg-primary transition-colors">FAQ</a>
         </nav>
@@ -426,6 +428,199 @@ function SecurityCard({ item }: { item: { icon: typeof Eye; title: string; body:
   );
 }
 
+/* ------------------------------------------------------------ Pricing */
+
+const pricingTiers: {
+  name: string;
+  price: string;
+  cadence: string;
+  annual?: string;
+  blurb: string;
+  features: string[];
+  cta: string;
+  accent?: boolean;
+  badge?: string;
+  comingSoon?: boolean;
+}[] = [
+  {
+    name: "Free",
+    price: "$0",
+    cadence: "forever",
+    blurb: "For trying Beacon on one account.",
+    features: [
+      "1 brokerage via CSV upload",
+      "Holdings and dividends views",
+      "Basic allocation breakdown",
+      "Light and dark themes",
+      "No credit card required",
+    ],
+    cta: "Get started",
+  },
+  {
+    name: "Pro",
+    price: "$8",
+    cadence: "per month",
+    annual: "or $69/year",
+    blurb: "For investors with real portfolios across multiple accounts.",
+    features: [
+      "Unlimited brokerages (auto-sync)",
+      "Dividend forecast and calendar",
+      "Watchlist and price alerts",
+      "Capital gains report",
+      "Sector and geography allocation",
+      "Performance vs S&P 500",
+      "Per-ticker notes and research",
+      "Read-only share link",
+      "CSV export",
+      "Email support",
+    ],
+    cta: "Start Pro",
+    accent: true,
+    badge: "Most popular",
+  },
+  {
+    name: "Elite",
+    price: "$15",
+    cadence: "per month",
+    annual: "or $129/year",
+    blurb: "For people who want AI-powered portfolio analysis.",
+    features: [
+      "Everything in Pro",
+      "AI portfolio analysis",
+      "AI rebalance recommendations",
+      "Monthly AI portfolio letter",
+      "Natural-language queries",
+      "Tax-loss harvesting plan",
+      "Wash-sale detection",
+      "Tax-lot accounting (FIFO / LIFO)",
+      "Custom benchmarks",
+      "Priority support",
+    ],
+    cta: "Coming soon",
+    comingSoon: true,
+  },
+];
+
+function Pricing() {
+  const ref = useReveal<HTMLDivElement>();
+  return (
+    <section id="pricing" className="py-24 sm:py-32">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6">
+        <div ref={ref} className="reveal text-center mb-14 max-w-2xl mx-auto">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-muted mb-3">
+            Pricing
+          </div>
+          <h2 className="text-3xl sm:text-5xl font-semibold tracking-tight leading-[1.08]">
+            Start free. Upgrade when you outgrow it.
+          </h2>
+          <p className="text-fg-secondary mt-4 text-base">
+            No surprise fees, cancel anytime, 14-day refund window on every paid plan.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5 items-stretch">
+          {pricingTiers.map((tier, i) => (
+            <PricingCard key={tier.name} tier={tier} delay={i * 60} />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PricingCard({
+  tier,
+  delay,
+}: {
+  tier: typeof pricingTiers[number];
+  delay: number;
+}) {
+  const ref = useReveal<HTMLDivElement>();
+  const { comingSoon, accent } = tier;
+  return (
+    <div
+      ref={ref}
+      className="reveal relative"
+      style={{ transitionDelay: `${delay}ms` }}
+    >
+      <div
+        className={`relative h-full rounded-2xl border p-7 sm:p-8 transition-all duration-300 ${
+          accent
+            ? "border-fg-primary/40 bg-bg-overlay shadow-card-hover"
+            : "border-border-subtle bg-bg-overlay/60"
+        } ${
+          comingSoon
+            ? "grayscale opacity-70"
+            : "hover:-translate-y-0.5 hover:shadow-card-hover hover:border-border-strong"
+        }`}
+      >
+        {tier.badge && !comingSoon && (
+          <div className="absolute -top-3 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-[0.18em] font-semibold px-3 py-1 rounded-full bg-fg-primary text-bg-base">
+            {tier.badge}
+          </div>
+        )}
+
+        <div className="text-sm font-semibold tracking-tight text-fg-primary">{tier.name}</div>
+        <div className="mt-4 flex items-baseline gap-2">
+          <span className="text-4xl sm:text-5xl font-semibold tracking-tight">{tier.price}</span>
+          <span className="text-sm text-fg-muted">{tier.cadence}</span>
+        </div>
+        {tier.annual && (
+          <div className="mt-1 text-xs text-fg-muted">{tier.annual}</div>
+        )}
+        <p className="mt-4 text-sm text-fg-secondary leading-relaxed min-h-[40px]">
+          {tier.blurb}
+        </p>
+
+        {comingSoon ? (
+          <button
+            disabled
+            aria-disabled="true"
+            className="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 rounded-full border border-border-subtle text-fg-muted cursor-not-allowed text-sm"
+          >
+            <X className="w-3.5 h-3.5" />
+            {tier.cta}
+          </button>
+        ) : (
+          <Link
+            to="/register"
+            className={`mt-6 w-full inline-flex items-center justify-center gap-2 h-11 rounded-full text-sm font-medium transition-colors ${
+              accent
+                ? "bg-fg-primary text-bg-base hover:bg-fg-primary/90"
+                : "border border-border-strong text-fg-primary hover:bg-bg-hover"
+            }`}
+          >
+            {tier.cta}
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        )}
+
+        <div className="mt-6 h-px bg-border-subtle" />
+
+        <ul className="mt-5 space-y-2.5 text-sm text-fg-secondary">
+          {tier.features.map((f) => (
+            <li key={f} className="flex items-start gap-2.5">
+              <Check className="w-4 h-4 mt-0.5 text-emerald-500 flex-shrink-0" />
+              <span>{f}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* "Coming soon" translucent gray cover with an X — Elite only */}
+      {comingSoon && (
+        <div className="absolute inset-0 rounded-2xl flex items-center justify-center pointer-events-none">
+          <div className="absolute inset-0 rounded-2xl bg-bg-base/60 backdrop-blur-[1px]" />
+          <div className="absolute inset-0 rounded-2xl border border-border-subtle" />
+          <div className="relative flex items-center gap-2 px-4 py-2 rounded-full bg-bg-inset/95 border border-border-strong text-fg-primary text-xs font-semibold tracking-wide shadow-card-hover">
+            <X className="w-3.5 h-3.5" strokeWidth={2.5} />
+            Coming soon
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- FAQ */
 
 const faqItems: { q: string; a: string }[] = [
@@ -611,8 +806,20 @@ function Footer() {
           <a href="#features" className="hover:text-fg-primary transition-colors">
             Features
           </a>
+          <a href="#pricing" className="hover:text-fg-primary transition-colors">
+            Pricing
+          </a>
           <a href="#faq" className="hover:text-fg-primary transition-colors">
             FAQ
+          </a>
+          <a
+            href="https://beacon-three-liard.vercel.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 hover:text-fg-primary transition-colors"
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            Status
           </a>
           <Link to="/terms" className="hover:text-fg-primary transition-colors">
             Terms
