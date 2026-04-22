@@ -35,8 +35,14 @@ services below have genuine free tiers that don't require payment info.
 **Architecture:**
 - **Neon** → Postgres
 - **Upstash** → Redis
-- **Koyeb** → backend (Node + Prisma + Bull)
+- **Render** → backend (Node + Prisma + Bull) — deploy config in [`render.yaml`](./render.yaml)
 - **Vercel** → dashboard + link-ui (static frontends)
+
+> Earlier iterations of this project used Koyeb for the backend. The
+> `koyeb.yaml` still lives in the repo for reference but the live
+> deploy is on Render. Use Render for new deploys — it's free-tier,
+> supports Blueprints (IaC via `render.yaml`), and has a visible
+> deploy log you can watch while this README catches up.
 
 ### Step-by-step
 
@@ -46,10 +52,10 @@ services below have genuine free tiers that don't require payment info.
 
 3. **Upstash** → https://console.upstash.com → login with GitHub → **Create Database** (Regional, TLS on, same region as Neon). Under **Connect**, pick the **ioredis** tab. Copy the `rediss://...` URL. That's your `REDIS_URL`.
 
-4. **Koyeb** → https://app.koyeb.com/auth/signup → GitHub sign-in → **Create Web Service** → Deploy from GitHub → pick the Beacon repo → Builder: **Dockerfile**, Dockerfile path: `apps/backend/Dockerfile`, exposed port: `3001`, health check path: `/health`. Instance: **Free**. Under **Environment variables**, paste everything from `.env.production.example` (mark secrets as Secret). Deploy. Copy the public URL — that's your backend URL.
+4. **Render** → https://dashboard.render.com → **New → Blueprint** → connect the Beacon repo → Render reads `render.yaml` and creates the web service using `apps/backend/Dockerfile`. Fill in the `sync: false` secrets when prompted. Deploy. Copy the public URL — that's your backend URL.
 
 5. **Vercel** (dashboard) → https://vercel.com/new → import the repo → **Root directory**: `apps/dashboard` → Framework: **Other** (the `vercel.json` handles build config). Environment variables:
-   - `VITE_API_URL=https://<your-koyeb-url>`
+   - `VITE_API_URL=https://<your-render-url>`
    - `VITE_LINK_UI_URL=https://<your-link-ui-vercel-url>` (fill in after step 6)
 
    Deploy and copy the Vercel URL.
@@ -58,19 +64,21 @@ services below have genuine free tiers that don't require payment info.
 
 7. Back in the dashboard Vercel project → Settings → Env Vars → update `VITE_LINK_UI_URL` → Redeploy.
 
-8. Back in Koyeb → edit the backend service's env vars:
+8. Back in Render → the web service's **Environment** tab → edit:
    - `CORS_ORIGINS=<dashboard URL>,<link-ui URL>`
    - `DASHBOARD_URL=<dashboard URL>`
    - `LINK_UI_URL=<link-ui URL>`
 
-   Redeploy.
+   Save — Render auto-redeploys on env changes.
 
 9. Open the dashboard URL, hit "Try the demo" on the landing (or visit `/demo` directly). Close your laptop. Open the URL from your phone. It works.
+
+**If a deploy didn't auto-trigger** on a push to `main`, open the Render service → **Manual Deploy → Deploy latest commit**. Free-tier builds take 3–8 minutes. Watch the deploy log for `[seedIfEmpty]` and `[demoSeed]` lines to confirm the demo seeded correctly.
 
 ### Keeping costs at zero
 - **Neon**: 3GB storage, free forever as long as you stay under it.
 - **Upstash**: 10k Redis commands/day. A single-user app uses <200/day.
-- **Koyeb free instance**: scales to zero after inactivity. First request after idle takes ~5s.
+- **Render free web service**: spins down after 15 minutes of inactivity. First request after idle takes 20–60s (cold start pulls the Docker image and re-runs the entrypoint, including the demo seed guard). Every subsequent request is fast.
 - **Vercel**: unlimited static hosting on the Hobby plan.
 
 ---

@@ -1,0 +1,48 @@
+# Render Blueprint for Beacon's backend.
+# Applied via https://dashboard.render.com/blueprints — keeps the deploy
+# config in version control so future changes don't drift out of the repo.
+#
+# Secrets (DATABASE_URL, REDIS_URL, JWT secrets, etc.) stay in Render's
+# environment variable UI — they're listed here as `sync: false` so
+# Render prompts for them instead of reading them from this file.
+
+services:
+  - type: web
+    name: vesly-backend
+    runtime: docker
+    region: oregon
+    plan: free
+    branch: main
+    rootDir: .
+    dockerfilePath: apps/backend/Dockerfile
+    autoDeploy: true         # pull + rebuild on every push to main
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ENVIRONMENT
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: LINK_TOKEN_SECRET
+        sync: false
+      - key: WEBHOOK_SIGNING_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DASHBOARD_URL
+        sync: false
+      - key: LINK_UI_URL
+        sync: false
+      - key: SNAPTRADE_CLIENT_ID
+        sync: false
+      - key: SNAPTRADE_CONSUMER_KEY
+        sync: false
+      - key: SNAPTRADE_WEBHOOK_SECRET
+        sync: false
