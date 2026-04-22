@@ -33,11 +33,14 @@ export function App() {
         <Routes>
           {/* Public marketing routes */}
           <Route path="/" element={<RootRoute />} />
+          {/* /landing always shows the marketing page, even when logged in —
+              handy for previewing the site without logging out. */}
+          <Route path="/landing" element={<PreviewLandingPage />} />
           <Route path="/login" element={<PreviewSignInPage />} />
           <Route path="/register" element={<PreviewSignInPage />} />
 
           {/* Legacy preview aliases — keep links in the wild working */}
-          <Route path="/preview-landing" element={<Navigate to="/" replace />} />
+          <Route path="/preview-landing" element={<Navigate to="/landing" replace />} />
           <Route path="/preview-signin" element={<Navigate to="/login" replace />} />
 
           {/* Legal */}
