@@ -7,6 +7,7 @@ import {
   getPortfolioDividends,
   getPortfolioAllocation,
   getConnectedAccounts,
+  getPortfolioBySymbol,
   ensureUserApplicationAndLinkToken,
 } from "../services/portfolioService.js";
 import { prisma } from "../db.js";
@@ -119,6 +120,27 @@ router.get("/allocation", async (req, res, next) => {
 router.get("/accounts", async (req, res, next) => {
   try {
     res.json(await getConnectedAccounts(req.developerId!));
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * GET /api/portfolio/by-symbol/:symbol — single-shot aggregate for the
+ * Stocks page detail view. Position, closed-lot FIFO P/L, win stats,
+ * dividend calendar, held-in breakdown, and activity feed — all in one
+ * payload so the right rail renders without a waterfall.
+ */
+router.get("/by-symbol/:symbol", async (req, res, next) => {
+  try {
+    const raw = String(req.params.symbol ?? "").trim();
+    if (!raw) {
+      return res.status(400).json({
+        error_type: "VALIDATION_ERROR",
+        error_message: "Missing symbol",
+      });
+    }
+    res.json(await getPortfolioBySymbol(req.developerId!, raw));
   } catch (e) {
     next(e);
   }

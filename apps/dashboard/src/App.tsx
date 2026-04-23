@@ -13,6 +13,7 @@ import { DividendsPage } from "./pages/DividendsPage";
 import { AllocationPage } from "./pages/AllocationPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { StocksPage } from "./pages/stocks/StocksPage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { accessToken } = useAuth();
@@ -53,6 +54,7 @@ export function App() {
           {/* Authenticated app routes — all under /app */}
           <Route path="/app" element={<RequireAuth><OverviewPage /></RequireAuth>} />
           <Route path="/app/holdings" element={<RequireAuth><HoldingsPage /></RequireAuth>} />
+          <Route path="/app/stocks" element={<RequireAuth><StocksPage /></RequireAuth>} />
           <Route path="/app/transactions" element={<RequireAuth><TransactionsPage /></RequireAuth>} />
           <Route path="/app/dividends" element={<RequireAuth><DividendsPage /></RequireAuth>} />
           <Route path="/app/allocation" element={<RequireAuth><AllocationPage /></RequireAuth>} />

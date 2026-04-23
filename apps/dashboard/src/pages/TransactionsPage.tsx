@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd } from "../components/money";
@@ -133,7 +134,17 @@ export function TransactionsPage() {
                   <TxBadge type={t.type} />
                 </td>
                 <td>
-                  <div className="font-num text-fg-primary text-sm">{t.ticker_symbol}</div>
+                  {t.ticker_symbol ? (
+                    <Link
+                      to={`/app/stocks?symbol=${encodeURIComponent(t.ticker_symbol)}`}
+                      className="font-num text-fg-primary text-sm hover:underline underline-offset-2 decoration-fg-muted"
+                      title={`Open ${t.ticker_symbol} details`}
+                    >
+                      {t.ticker_symbol}
+                    </Link>
+                  ) : (
+                    <div className="font-num text-fg-primary text-sm">—</div>
+                  )}
                   <div className="text-[10px] text-fg-muted truncate max-w-[180px]">
                     {t.security_name}
                   </div>

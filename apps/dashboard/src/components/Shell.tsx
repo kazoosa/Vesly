@@ -16,11 +16,13 @@ import {
   IconSettings,
   IconSun,
   IconMoon,
+  IconTrend,
 } from "./Icon";
 
 const NAV = [
   { to: "/app", label: "Overview", Icon: IconDashboard },
   { to: "/app/holdings", label: "Holdings", Icon: IconLayers },
+  { to: "/app/stocks", label: "Stocks", Icon: IconTrend },
   { to: "/app/transactions", label: "Transactions", Icon: IconArrows },
   { to: "/app/dividends", label: "Dividends", Icon: IconCoins },
   { to: "/app/allocation", label: "Allocation", Icon: IconPie },

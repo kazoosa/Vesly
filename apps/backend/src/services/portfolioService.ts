@@ -429,3 +429,378 @@ function typeColor(t: string): string {
       return "#94a3b8";
   }
 }
+
+/* ------------------------------------------------------------------
+   Per-symbol aggregate for the Stocks detail view.
+
+   Fans out everything the right-rail panels need in a single DB round
+   trip: position summary, FIFO closed-lot pairing, win-rate stats,
+   dividend calendar, held-in breakdown, activity feed, and the
+   symbol's share of the overall portfolio.
+
+   `type` on InvestmentTransaction is conventionally "buy" | "sell" |
+   "dividend"; anything else is treated as activity but not paired
+   into lots.
+   ------------------------------------------------------------------ */
+
+export interface ClosedLot {
+  openedDate: string;
+  closedDate: string;
+  shares: number;
+  costPerShare: number;
+  sellPerShare: number;
+  realizedPl: number;
+  realizedPlPct: number;
+  heldDays: number;
+  outcome: "win" | "loss" | "breakeven";
+}
+
+export interface OpenLot {
+  accountId: string;
+  institutionName: string;
+  institutionColor: string;
+  accountName: string;
+  acquiredDate: string;
+  shares: number;
+  costPerShare: number;
+  costBasis: number;
+  currentValue: number;
+  unrealizedPl: number;
+  unrealizedPlPct: number;
+}
+
+export async function getPortfolioBySymbol(developerId: string, rawSymbol: string) {
+  const symbol = rawSymbol.trim().toUpperCase();
+
+  const security = await prisma.security.findUnique({
+    where: { tickerSymbol: symbol },
+  });
+  if (!security) {
+    // Let the caller decide whether to 404 or just show the market-only
+    // view (the frontend tolerates an empty position payload).
+    return {
+      symbol,
+      securityId: null,
+      securityName: symbol,
+      exchange: null,
+      closePrice: 0,
+      empty: true,
+    };
+  }
+
+  const itemIds = await getUserItemIds(developerId);
+  const accounts = await prisma.account.findMany({
+    where: { itemId: { in: itemIds }, type: "investment" },
+    include: { item: { include: { institution: true } } },
+  });
+  type AccountWithItem = (typeof accounts)[number];
+  const accountIds = accounts.map((a: { id: string }) => a.id);
+  const accountMap = new Map<string, AccountWithItem>(
+    accounts.map((a: AccountWithItem) => [a.id, a]),
+  );
+
+  // Current holdings for this symbol across all brokerages
+  const holdings = await prisma.investmentHolding.findMany({
+    where: { accountId: { in: accountIds }, securityId: security.id },
+  });
+
+  // Every transaction (buy / sell / dividend / other) for this symbol,
+  // ordered by date ascending — required for FIFO closed-lot pairing.
+  type Txn = {
+    id: string;
+    accountId: string;
+    securityId: string;
+    date: Date;
+    name: string;
+    type: string;
+    quantity: number;
+    price: number;
+    amount: number;
+    fees: number;
+  };
+  const txns = (await prisma.investmentTransaction.findMany({
+    where: { accountId: { in: accountIds }, securityId: security.id },
+    orderBy: { date: "asc" },
+  })) as unknown as Txn[];
+
+  // --------- Position (current holdings) ---------------------------------
+
+  let sharesHeld = 0;
+  let costBasis = 0;
+  let marketValue = 0;
+  const heldInMap = new Map<
+    string,
+    { institutionName: string; institutionColor: string; accountName: string; shares: number; value: number }
+  >();
+  const openLotsByAccount: OpenLot[] = [];
+
+  for (const h of holdings) {
+    sharesHeld += h.quantity;
+    costBasis += h.costBasis;
+    marketValue += h.institutionValue;
+    const acc = accountMap.get(h.accountId)!;
+    const key = acc.item.institutionId + "::" + acc.id;
+    heldInMap.set(key, {
+      institutionName: acc.item.institution.name,
+      institutionColor: acc.item.institution.primaryColor,
+      accountName: acc.name,
+      shares: h.quantity,
+      value: h.institutionValue,
+    });
+    const perShareCost = h.quantity > 0 ? h.costBasis / h.quantity : 0;
+    const unrealized = h.institutionValue - h.costBasis;
+    openLotsByAccount.push({
+      accountId: acc.id,
+      institutionName: acc.item.institution.name,
+      institutionColor: acc.item.institution.primaryColor,
+      accountName: acc.name,
+      acquiredDate: h.createdAt.toISOString(),
+      shares: +h.quantity.toFixed(4),
+      costPerShare: +perShareCost.toFixed(4),
+      costBasis: +h.costBasis.toFixed(2),
+      currentValue: +h.institutionValue.toFixed(2),
+      unrealizedPl: +unrealized.toFixed(2),
+      unrealizedPlPct: h.costBasis > 0 ? +((unrealized / h.costBasis) * 100).toFixed(2) : 0,
+    });
+  }
+
+  const unrealizedPl = marketValue - costBasis;
+  const unrealizedPlPct = costBasis > 0 ? (unrealizedPl / costBasis) * 100 : 0;
+  const avgCostPerShare = sharesHeld > 0 ? costBasis / sharesHeld : 0;
+
+  // --------- FIFO closed-lot pairing -------------------------------------
+
+  // Queue of open lot candidates (in chronological order). Each sell
+  // matches against the oldest open lots, splitting as needed.
+  type OpenQueueEntry = { shares: number; pricePerShare: number; date: Date };
+  const openQueue: OpenQueueEntry[] = [];
+  const closedLots: ClosedLot[] = [];
+
+  for (const t of txns) {
+    if (t.type === "buy" && t.quantity > 0) {
+      openQueue.push({
+        shares: t.quantity,
+        pricePerShare: t.price,
+        date: t.date,
+      });
+    } else if (t.type === "sell" && t.quantity > 0) {
+      let remaining = t.quantity;
+      while (remaining > 1e-9 && openQueue.length > 0) {
+        const lot = openQueue[0];
+        const matched = Math.min(lot.shares, remaining);
+        const realized = (t.price - lot.pricePerShare) * matched;
+        const cost = lot.pricePerShare * matched;
+        const pct = cost > 0 ? (realized / cost) * 100 : 0;
+        const heldDays = Math.max(
+          0,
+          Math.round((t.date.getTime() - lot.date.getTime()) / 86_400_000),
+        );
+        closedLots.push({
+          openedDate: lot.date.toISOString(),
+          closedDate: t.date.toISOString(),
+          shares: +matched.toFixed(4),
+          costPerShare: +lot.pricePerShare.toFixed(4),
+          sellPerShare: +t.price.toFixed(4),
+          realizedPl: +realized.toFixed(2),
+          realizedPlPct: +pct.toFixed(2),
+          heldDays,
+          outcome: realized > 0.01 ? "win" : realized < -0.01 ? "loss" : "breakeven",
+        });
+        lot.shares -= matched;
+        remaining -= matched;
+        if (lot.shares <= 1e-9) openQueue.shift();
+      }
+      // If the user sold more than we have open lots for, ignore the
+      // surplus (could be a short or data gap) — skip without pairing.
+    }
+  }
+
+  // --------- Realized P/L aggregates -------------------------------------
+
+  const now = new Date();
+  const ytdStart = new Date(now.getFullYear(), 0, 1);
+  let realizedLifetime = 0;
+  let realizedYtd = 0;
+  const monthlyPl = new Map<string, number>(); // key: YYYY-MM
+  let heldDaysSum = 0;
+
+  for (const lot of closedLots) {
+    realizedLifetime += lot.realizedPl;
+    const closedDate = new Date(lot.closedDate);
+    if (closedDate >= ytdStart) realizedYtd += lot.realizedPl;
+    heldDaysSum += lot.heldDays;
+    const key = `${closedDate.getFullYear()}-${String(closedDate.getMonth() + 1).padStart(2, "0")}`;
+    monthlyPl.set(key, (monthlyPl.get(key) ?? 0) + lot.realizedPl);
+  }
+
+  // Last 12 months in order (for the mini bar chart)
+  const byMonth: Array<{ month: string; pl: number }> = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    byMonth.push({ month: key, pl: +(monthlyPl.get(key) ?? 0).toFixed(2) });
+  }
+
+  // --------- Win-rate stats ---------------------------------------------
+
+  const wins = closedLots.filter((l) => l.outcome === "win");
+  const losses = closedLots.filter((l) => l.outcome === "loss");
+  const avgWin = wins.length > 0 ? wins.reduce((s, l) => s + l.realizedPl, 0) / wins.length : 0;
+  const avgLoss =
+    losses.length > 0 ? losses.reduce((s, l) => s + l.realizedPl, 0) / losses.length : 0;
+  const payoffRatio = avgLoss < 0 ? Math.abs(avgWin / avgLoss) : 0;
+  const bestTrade = closedLots.reduce<ClosedLot | null>(
+    (best, l) => (!best || l.realizedPl > best.realizedPl ? l : best),
+    null,
+  );
+  const worstTrade = closedLots.reduce<ClosedLot | null>(
+    (worst, l) => (!worst || l.realizedPl < worst.realizedPl ? l : worst),
+    null,
+  );
+  const winStats = {
+    winRate: closedLots.length > 0 ? +((wins.length / closedLots.length) * 100).toFixed(1) : 0,
+    winCount: wins.length,
+    lossCount: losses.length,
+    avgWin: +avgWin.toFixed(2),
+    avgLoss: +avgLoss.toFixed(2),
+    payoffRatio: +payoffRatio.toFixed(2),
+    bestTrade: bestTrade ? +bestTrade.realizedPl.toFixed(2) : 0,
+    worstTrade: worstTrade ? +worstTrade.realizedPl.toFixed(2) : 0,
+  };
+
+  // --------- Portfolio weight -------------------------------------------
+
+  const allHoldings = await prisma.investmentHolding.findMany({
+    where: { accountId: { in: accountIds } },
+    select: { institutionValue: true },
+  });
+  const totalPortfolioValue = allHoldings.reduce(
+    (s: number, h: { institutionValue: number }) => s + h.institutionValue,
+    0,
+  );
+
+  // --------- Dividends --------------------------------------------------
+
+  const divTxns = txns.filter((t) => t.type === "dividend");
+  const divYtd = divTxns
+    .filter((t) => t.date >= ytdStart)
+    .reduce((s, t) => s + t.amount, 0);
+  const divLifetime = divTxns.reduce((s, t) => s + t.amount, 0);
+  const trailing12mStart = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+  const annualized = divTxns
+    .filter((t) => t.date >= trailing12mStart)
+    .reduce((s, t) => s + t.amount, 0);
+  const yieldPct = marketValue > 0 ? (annualized / marketValue) * 100 : 0;
+
+  // Quarterly buckets for the calendar (last 4 quarters)
+  type QuarterKey = "Q1" | "Q2" | "Q3" | "Q4";
+  const byQuarter: Array<{
+    quarter: QuarterKey;
+    year: number;
+    status: "PAID" | "UPCOMING";
+    perShare: number;
+    totalPaid: number;
+    exDate: string | null;
+    payDate: string | null;
+    yieldPct: number | null;
+  }> = [];
+  for (let q = 3; q >= 0; q--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - q * 3, 1);
+    const quarter = (["Q1", "Q2", "Q3", "Q4"] as QuarterKey[])[Math.floor(d.getMonth() / 3)];
+    const year = d.getFullYear();
+    const qStart = new Date(year, Math.floor(d.getMonth() / 3) * 3, 1);
+    const qEnd = new Date(year, Math.floor(d.getMonth() / 3) * 3 + 3, 0);
+    const qTxns = divTxns.filter((t) => t.date >= qStart && t.date <= qEnd);
+    const totalPaid = qTxns.reduce((s, t) => s + t.amount, 0);
+    const perShare = sharesHeld > 0 ? totalPaid / sharesHeld : 0;
+    const last = qTxns[qTxns.length - 1];
+    byQuarter.push({
+      quarter,
+      year,
+      status: qTxns.length > 0 || qEnd < now ? "PAID" : "UPCOMING",
+      perShare: +perShare.toFixed(3),
+      totalPaid: +totalPaid.toFixed(2),
+      exDate: last ? new Date(last.date.getTime() - 86_400_000).toISOString() : null,
+      payDate: last ? last.date.toISOString() : null,
+      yieldPct:
+        marketValue > 0 && totalPaid > 0 ? +((totalPaid / marketValue) * 100).toFixed(2) : null,
+    });
+  }
+  const nextPaymentDate = divTxns.length > 0
+    ? new Date(divTxns[divTxns.length - 1].date.getTime() + 91 * 86_400_000).toISOString()
+    : null;
+
+  // --------- Activity feed ----------------------------------------------
+
+  const activity = txns.map((t) => {
+    const acc = accountMap.get(t.accountId);
+    return {
+      id: t.id,
+      date: t.date.toISOString(),
+      type:
+        t.type === "buy" || t.type === "sell" || t.type === "dividend"
+          ? t.type
+          : "other",
+      shares: +t.quantity.toFixed(4),
+      pricePerShare: +t.price.toFixed(4),
+      amount: +t.amount.toFixed(2),
+      name: t.name,
+      institutionName: acc?.item.institution.name ?? "",
+      institutionColor: acc?.item.institution.primaryColor ?? "#64748b",
+      accountName: acc?.name ?? "",
+    };
+  });
+
+  return {
+    symbol,
+    securityId: security.id,
+    securityName: security.name,
+    exchange: security.exchange,
+    closePrice: security.closePrice,
+    empty: false,
+    position: {
+      sharesHeld: +sharesHeld.toFixed(4),
+      avgCostPerShare: +avgCostPerShare.toFixed(4),
+      marketValue: +marketValue.toFixed(2),
+      costBasis: +costBasis.toFixed(2),
+      unrealizedPl: +unrealizedPl.toFixed(2),
+      unrealizedPlPct: +unrealizedPlPct.toFixed(2),
+      openLotsCount: openLotsByAccount.length,
+    },
+    realized: {
+      lifetime: +realizedLifetime.toFixed(2),
+      ytd: +realizedYtd.toFixed(2),
+      closedLotsCount: closedLots.length,
+      avgHoldDays:
+        closedLots.length > 0 ? Math.round(heldDaysSum / closedLots.length) : 0,
+      byMonth,
+    },
+    lots: {
+      open: openLotsByAccount,
+      closed: closedLots.sort(
+        (a, b) => new Date(b.closedDate).getTime() - new Date(a.closedDate).getTime(),
+      ),
+    },
+    winStats,
+    portfolioWeight: {
+      pct: totalPortfolioValue > 0 ? +((marketValue / totalPortfolioValue) * 100).toFixed(2) : 0,
+      totalPortfolioValue: +totalPortfolioValue.toFixed(2),
+      holdingCount: allHoldings.length,
+    },
+    dividends: {
+      ytd: +divYtd.toFixed(2),
+      lifetime: +divLifetime.toFixed(2),
+      paymentsCount: divTxns.length,
+      annualizedEstimate: +annualized.toFixed(2),
+      yieldPct: +yieldPct.toFixed(2),
+      nextPaymentDateEstimate: nextPaymentDate,
+      byQuarter,
+    },
+    heldIn: [...heldInMap.values()].map((h) => ({
+      ...h,
+      shares: +h.shares.toFixed(4),
+      value: +h.value.toFixed(2),
+    })),
+    activity,
+  };
+}

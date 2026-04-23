@@ -44,7 +44,7 @@ async function main() {
   });
   const items = apps.length
     ? await prisma.item.findMany({
-        where: { applicationId: { in: apps.map((a) => a.id) } },
+        where: { applicationId: { in: apps.map((a: { id: string }) => a.id) } },
         select: { id: true },
       })
     : [];
@@ -52,7 +52,7 @@ async function main() {
   let holdingsCount = 0;
   if (items.length > 0) {
     holdingsCount = await prisma.investmentHolding.count({
-      where: { account: { itemId: { in: items.map((i) => i.id) } } },
+      where: { account: { itemId: { in: items.map((i: { id: string }) => i.id) } } },
     });
   }
 

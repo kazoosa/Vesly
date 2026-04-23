@@ -38,6 +38,7 @@
     "snaptrade-typescript-sdk": "^9.0.98",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "yahoo-finance2": "2.11.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

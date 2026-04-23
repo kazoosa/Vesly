@@ -22,6 +22,7 @@ import portfolioRoutes from "./routes/portfolio.routes.js";
 import snaptradeRoutes from "./routes/snaptrade.routes.js";
 import csvRoutes from "./routes/csv.routes.js";
 import demoRoutes from "./routes/demo.routes.js";
+import stocksRoutes from "./routes/stocks.routes.js";
 import { swaggerSpec } from "./swagger.js";
 
 export function createApp() {
@@ -74,6 +75,8 @@ export function createApp() {
   app.use("/api/csv", csvRoutes);
   // Public diagnostic — no auth required.
   app.use("/api/demo", demoRoutes);
+  // Live stock data (quotes, history, news, search). Auth required.
+  app.use("/api/stocks", stocksRoutes);
 
   app.use(errorHandler);
   return app;

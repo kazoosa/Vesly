@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd, fmtPct } from "../components/money";
@@ -95,7 +96,16 @@ export function HoldingsPage() {
                     <td className="text-fg-fainter text-xs">
                       {expanded === h.ticker_symbol ? "▾" : "▸"}
                     </td>
-                    <td className="font-num text-fg-primary font-semibold">{h.ticker_symbol}</td>
+                    <td className="font-num text-fg-primary font-semibold">
+                      <Link
+                        to={`/app/stocks?symbol=${encodeURIComponent(h.ticker_symbol)}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="hover:underline underline-offset-2 decoration-fg-muted"
+                        title={`Open ${h.ticker_symbol} details`}
+                      >
+                        {h.ticker_symbol}
+                      </Link>
+                    </td>
                     <td className="text-xs text-fg-secondary max-w-[220px] truncate">{h.name}</td>
                     <td className="text-right font-num text-fg-secondary">{h.quantity.toFixed(4)}</td>
                     <td className="text-right font-num text-fg-secondary">{fmtUsd(h.avg_cost)}</td>

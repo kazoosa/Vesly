@@ -115,3 +115,9 @@ export const IconRefresh = (p: Props) => (
     <path d="M3 21v-5h5" />
   </Wrap>
 );
+export const IconTrend = (p: Props) => (
+  <Wrap {...p}>
+    <polyline points="3 17 9 11 13 15 21 7" />
+    <polyline points="14 7 21 7 21 14" />
+  </Wrap>
+);
