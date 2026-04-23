@@ -48,6 +48,14 @@ export function DemoPage() {
     if (startedRef.current) return;
     startedRef.current = true;
 
+    // Belt + braces: blow away any stored auth BEFORE the pre-flight so
+    // stale JWTs from a recreated demo developer or a rotated
+    // JWT_SECRET can't leak into the /app page below. The subsequent
+    // login() writes a fresh session to the same key.
+    try {
+      localStorage.removeItem("finlink_auth");
+    } catch { /* SSR / private mode — ignore */ }
+
     let cancelled = false;
 
     (async () => {
