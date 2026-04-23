@@ -6,6 +6,7 @@ import { useTheme } from "../lib/theme";
 import { ConnectButton } from "./ConnectButton";
 import { APP_NAME } from "../lib/brand";
 import { BeaconMark } from "./BeaconMark";
+import { SessionNavBar, SIDEBAR_COLLAPSED_PX } from "./ui/sidebar";
 import {
   IconDashboard,
   IconLayers,
@@ -58,7 +59,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
     })?.label ?? "Beacon";
 
   return (
-    <div className="min-h-screen bg-bg-base md:flex">
+    <div className="min-h-screen bg-bg-base">
+      {/* Desktop collapsible sidebar — hidden under md, fixed positioning. */}
+      <SessionNavBar />
+
       {/* Mobile top bar — only visible under md breakpoint */}
       <div className="md:hidden sticky top-0 z-40 h-14 flex items-center justify-between px-4 bg-bg-raised border-b border-border-subtle">
         <button
@@ -93,16 +97,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
         />
       )}
 
-      {/* Sidebar — fixed drawer on mobile, sticky sibling on desktop */}
+      {/* Mobile drawer sidebar — desktop uses SessionNavBar above. */}
       <aside
         className={clsx(
-          "bg-bg-raised flex flex-col shrink-0 border-r border-border-subtle",
+          "md:hidden bg-bg-raised flex flex-col shrink-0 border-r border-border-subtle",
           "fixed z-50 inset-y-0 left-0 w-[280px] max-w-[85vw] transition-transform duration-300 ease-out",
           menuOpen ? "translate-x-0" : "-translate-x-full",
-          "md:sticky md:top-0 md:h-screen md:w-60 md:translate-x-0 md:transition-none md:overflow-y-auto",
         )}
         style={{ boxShadow: "1px 0 0 0 rgb(var(--border-subtle))" }}
-        aria-label="Primary navigation"
+        aria-label="Primary navigation (mobile)"
       >
         <div className="h-14 flex items-center justify-between gap-2 px-4 border-b border-border-subtle">
           <div className="flex items-center gap-2.5 text-fg-primary">
@@ -176,7 +179,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 bg-bg-base">
+      {/* Reserve room for the collapsed desktop sidebar so content doesn't
+          slide under it. The sidebar expands on hover ON TOP of the content
+          rather than re-flowing it — nothing reflows as the user glances
+          at the nav. */}
+      <main className="min-w-0 bg-bg-base md:pl-[var(--sidebar-w)]" style={{ ['--sidebar-w' as string]: `${SIDEBAR_COLLAPSED_PX}px` }}>
         <div className="p-4 md:p-6 max-w-7xl mx-auto motion-safe:animate-fade-in">{children}</div>
       </main>
     </div>
