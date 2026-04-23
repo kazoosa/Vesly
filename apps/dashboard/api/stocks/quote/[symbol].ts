@@ -29,7 +29,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!quote) {
       // Surface the underlying yahoo-finance2 error via a debug header
       // so we can see why fetchQuote is returning null from the client.
-      res.setHeader("X-Yahoo-Debug", getLastError() ?? "null returned");
+      res.setHeader(
+        "X-Yahoo-Debug",
+        (getLastError() ?? "null returned").replace(/[\r\n\t]+/g, " ").slice(0, 400),
+      );
       return res.status(200).json({
         symbol,
         name: symbol,
