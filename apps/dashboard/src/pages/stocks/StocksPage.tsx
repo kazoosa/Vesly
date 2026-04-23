@@ -36,7 +36,10 @@ export function StocksPage() {
 
   const symbolList = useMemo(() => {
     const held = (holdings.data?.holdings ?? [])
-      .filter((h) => h.ticker_symbol && /^[A-Z.-]{1,10}$/.test(h.ticker_symbol.toUpperCase()))
+      // Accept digits (mutual funds like FXAIX, Vanguard VTSAX) in
+      // addition to letters / dots / hyphens. Previous regex excluded
+      // them and silently dropped real holdings.
+      .filter((h) => h.ticker_symbol && /^[A-Z0-9.-]{1,10}$/.test(h.ticker_symbol.toUpperCase()))
       .sort((a, b) => b.market_value - a.market_value)
       .map((h) => h.ticker_symbol.toUpperCase());
     const seen = new Set<string>();

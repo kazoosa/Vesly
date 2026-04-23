@@ -39,6 +39,10 @@ export interface StockQuote {
   logoUrl: string | null;
   isFallback: boolean;
   asOf: string;
+  /** Which backend source served this quote. */
+  source?: "finnhub" | "yahoo" | "stooq";
+  /** Short human-readable label — e.g. "Yahoo (real-time)". */
+  sourceLabel?: string;
 }
 
 export interface StockCandle {

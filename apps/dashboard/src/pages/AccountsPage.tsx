@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
@@ -29,11 +30,37 @@ export function AccountsPage() {
     queryFn: () => f<{ accounts: Account[] }>("/api/portfolio/accounts"),
   });
 
+  // Per-row state: which item is pending disconnect, and which item
+  // should show the green "Disconnected" banner for 3 seconds after
+  // success before the query invalidation drops it naturally.
+  const [pendingItemId, setPendingItemId] = useState<string | null>(null);
+  const [confirmItemId, setConfirmItemId] = useState<string | null>(null);
+  const [justDisconnectedItemId, setJustDisconnectedItemId] = useState<string | null>(null);
+  const dismissTimerRef = useRef<number | null>(null);
+
   const disconnect = useMutation({
-    mutationFn: (itemId: string) =>
-      f(`/api/portfolio/accounts/${itemId}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries(),
+    mutationFn: (itemId: string) => {
+      setPendingItemId(itemId);
+      return f(`/api/portfolio/accounts/${itemId}`, { method: "DELETE" });
+    },
+    onSuccess: (_data, itemId) => {
+      setPendingItemId(null);
+      setJustDisconnectedItemId(itemId);
+      qc.invalidateQueries();
+      if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = window.setTimeout(
+        () => setJustDisconnectedItemId(null),
+        3000,
+      );
+    },
+    onError: () => setPendingItemId(null),
   });
+
+  useEffect(() => {
+    return () => {
+      if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+    };
+  }, []);
 
   const refresh = useMutation({
     mutationFn: () => f("/api/snaptrade/sync", { method: "POST" }),
@@ -107,14 +134,18 @@ export function AccountsPage() {
                     <div className="text-[10px] text-fg-muted font-mono">item: {itemId.slice(-12)}</div>
                   </div>
                 </div>
-                <button
-                  className="btn-danger text-xs"
-                  onClick={() => {
-                    if (confirm(`Disconnect ${g.institution}?`)) disconnect.mutate(itemId);
+                <DisconnectControl
+                  institution={g.institution}
+                  pending={pendingItemId === itemId}
+                  justDisconnected={justDisconnectedItemId === itemId}
+                  confirmOpen={confirmItemId === itemId}
+                  onAskConfirm={() => setConfirmItemId(itemId)}
+                  onCancel={() => setConfirmItemId(null)}
+                  onConfirm={() => {
+                    setConfirmItemId(null);
+                    disconnect.mutate(itemId);
                   }}
-                >
-                  Disconnect
-                </button>
+                />
               </div>
               <div className="space-y-2">
                 {g.accounts.map((a) => (
@@ -148,5 +179,100 @@ export function AccountsPage() {
 
       <CsvImport />
     </div>
+  );
+}
+
+/**
+ * Three-state disconnect UI:
+ *   idle         → red "Disconnect" button
+ *   confirmOpen  → inline Confirm/Cancel prompt (replaces the browser
+ *                  `confirm()` dialog, which looks out of place)
+ *   pending      → spinner + "Disconnecting…", disabled
+ *   just-done    → green "Disconnected" confirmation for 3s before
+ *                  the mutation's query invalidation drops the row
+ */
+function DisconnectControl({
+  institution,
+  pending,
+  justDisconnected,
+  confirmOpen,
+  onAskConfirm,
+  onCancel,
+  onConfirm,
+}: {
+  institution: string;
+  pending: boolean;
+  justDisconnected: boolean;
+  confirmOpen: boolean;
+  onAskConfirm: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (justDisconnected) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs badge badge-green">
+        <svg
+          aria-hidden
+          viewBox="0 0 24 24"
+          className="w-3 h-3"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+        Disconnected
+      </span>
+    );
+  }
+  if (pending) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted">
+        <Spinner />
+        Disconnecting…
+      </span>
+    );
+  }
+  if (confirmOpen) {
+    return (
+      <div className="inline-flex items-center gap-1.5">
+        <span className="text-[11px] text-fg-muted mr-1">
+          Disconnect {institution}?
+        </span>
+        <button type="button" className="btn-danger text-xs" onClick={onConfirm}>
+          Confirm
+        </button>
+        <button type="button" className="btn-ghost text-xs" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button type="button" className="btn-danger text-xs" onClick={onAskConfirm}>
+      Disconnect
+    </button>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className="w-3 h-3 animate-spin text-fg-muted"
+      style={{ animationDuration: "800ms" }}
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.2" strokeWidth="3" fill="none" />
+      <path
+        d="M12 3 A9 9 0 0 1 21 12"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
   );
 }

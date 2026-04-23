@@ -54,6 +54,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         logoUrl: null,
         isFallback: true,
         asOf: new Date().toISOString(),
+        source: "stooq",
+        sourceLabel: "Data temporarily unavailable",
       });
     }
     return res.status(200).json(quote);

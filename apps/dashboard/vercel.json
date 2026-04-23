@@ -4,6 +4,7 @@
   "outputDirectory": "dist",
   "installCommand": "npm install --legacy-peer-deps --no-audit --no-fund",
   "framework": null,
+  "regions": ["fra1", "hnd1"],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

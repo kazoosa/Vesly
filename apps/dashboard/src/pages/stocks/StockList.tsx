@@ -31,29 +31,43 @@ export function StockList({
     return symbols.filter((s) => s.includes(q));
   }, [symbols, query]);
 
+  const hasQuery = query.trim().length > 0;
+
   return (
-    <div className="card p-3 space-y-2">
-      <div className="relative">
+    <div className="card p-3 flex flex-col min-h-0 max-h-[calc(100vh-6rem)]">
+      <div className="relative mb-1">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search symbols"
-          className="input w-full text-sm pl-8"
+          className={`input w-full text-sm ${hasQuery ? "pl-3" : "pl-8"}`}
           aria-label="Search stocks"
         />
-        <svg
-          aria-hidden
-          className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        >
-          <circle cx="11" cy="11" r="7" />
-          <line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
+        {/* Hide the icon while the user is typing so it never overlaps
+            the text — we drop the left padding above to compensate. */}
+        {!hasQuery && (
+          <svg
+            aria-hidden
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted pointer-events-none"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+        )}
       </div>
-      <ul className="divide-y divide-border-subtle max-h-[calc(100vh-10rem)] md:max-h-[calc(100vh-10rem)] overflow-y-auto -mx-1 pr-1">
+      <div className="text-[10px] uppercase tracking-widest text-fg-muted font-mono px-1 pb-1">
+        Showing {filtered.length} symbol{filtered.length === 1 ? "" : "s"}
+        {hasQuery && symbols.length !== filtered.length && (
+          <span className="ml-1 normal-case tracking-normal text-fg-fainter">
+            · {symbols.length} total
+          </span>
+        )}
+      </div>
+      <ul className="divide-y divide-border-subtle overflow-y-auto -mx-1 pr-1 flex-1 min-h-0">
         {filtered.map((sym) => (
           <StockListItem
             key={sym}
@@ -126,6 +140,16 @@ function StockListItem({
     enabled,
     staleTime: 5 * 60_000,
   });
+
+  // Surface per-row failures in the console so we can see in prod
+  // which specific tickers are breaking (and whether it's quote or
+  // history that's the culprit).
+  useEffect(() => {
+    if (quote.error) console.warn(`[stocks] quote failed for ${symbol}:`, quote.error);
+  }, [quote.error, symbol]);
+  useEffect(() => {
+    if (history.error) console.warn(`[stocks] history failed for ${symbol}:`, history.error);
+  }, [history.error, symbol]);
 
   const sparkData = useMemo(() => {
     const closes = (history.data?.candles ?? [])

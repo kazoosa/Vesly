@@ -139,6 +139,20 @@ function StockHeader({
         </div>
       </div>
       <div className="flex items-center gap-2 ml-auto">
+        {q?.sourceLabel && (
+          <span
+            className={`badge text-[10px] ${
+              q.source === "finnhub" || q.source === "yahoo"
+                ? "badge-green"
+                : q.source === "stooq"
+                ? "badge-amber"
+                : "badge-blue"
+            }`}
+            title={`Data source: ${q.sourceLabel}`}
+          >
+            {q.sourceLabel}
+          </span>
+        )}
         <span className="text-[11px] text-fg-muted">
           {syncedMinutesAgo ? `synced ${syncedMinutesAgo}` : ""}
         </span>

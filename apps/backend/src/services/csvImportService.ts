@@ -260,11 +260,88 @@ export function previewCsv(broker: Broker, csv: string): ParsedResult[] {
 }
 
 /**
+ * Best-effort broker detection from CSV headers.
+ *
+ * Reads only the first non-empty line (the header row) and matches
+ * against the fingerprints each broker's export uses. Returns
+ * `null` when the CSV doesn't match any known format; callers
+ * should fall back to a manual picker.
+ *
+ * The checks are intentionally narrow — we'd rather return null and
+ * ask than misclassify a CSV and dump it into the wrong parser.
+ */
+export function detectBroker(csv: string): Broker | null {
+  const firstLine = csv.split(/\r?\n/).find((l) => l.trim().length > 0);
+  if (!firstLine) return null;
+  const header = firstLine.toLowerCase();
+  const has = (needle: string) => header.includes(needle.toLowerCase());
+
+  // Fidelity's Portfolio_Positions export
+  if (has("account number") && has("cost basis total")) return "fidelity";
+
+  // Vanguard — starts with "Fund Account Number" OR has the
+  // "Trade Date" column seen on their Positions export
+  if (has("fund account number") || (has("account number") && has("trade date"))) {
+    return "vanguard";
+  }
+
+  // Schwab — Security Type + Cost Basis WITHOUT the Fidelity-style
+  // "Account Number" column
+  if (has("security type") && has("cost basis") && !has("account number")) {
+    return "schwab";
+  }
+
+  // Robinhood doesn't export positions natively, so the docs tell
+  // users to build a minimal 3-column CSV. Detect that narrow
+  // shape: header is exactly "symbol,quantity,price" (any order).
+  const cols = header.split(",").map((c) => c.trim());
+  if (
+    cols.length === 3 &&
+    cols.includes("symbol") &&
+    cols.includes("quantity") &&
+    cols.includes("price")
+  ) {
+    return "robinhood";
+  }
+
+  return null;
+}
+
+/**
  * Import a CSV into the DB. Creates a new Item per broker (reusing an
  * existing one if a CSV import for that broker is already present for this
  * user) and replaces its holdings to match the uploaded file.
+ *
+ * Wrapped in try/catch that logs the full stack via logger.error and
+ * rethrows as a readable badRequest. Without this, any unexpected
+ * Prisma / parser error surfaces to the client as a generic 500
+ * "Internal server error" which tells us and the user nothing.
  */
 export async function importCsv(
+  developer: Developer,
+  broker: Broker,
+  csv: string,
+): Promise<{ itemId: string; accounts: number; holdings: number }> {
+  try {
+    return await importCsvInner(developer, broker, csv);
+  } catch (err) {
+    logger.error(
+      { err, developerId: developer.id, broker },
+      "importCsv failed",
+    );
+    if (err instanceof Error) {
+      // Re-throw as a 400 so the frontend shows the real reason.
+      // ApiError thrown inside importCsvInner (via Errors.badRequest)
+      // already has a status; pass it through unchanged.
+      const status = (err as { status?: number }).status;
+      if (status && status >= 400 && status < 500) throw err;
+      throw Errors.badRequest(err.message || "CSV import failed");
+    }
+    throw Errors.badRequest("CSV import failed");
+  }
+}
+
+async function importCsvInner(
   developer: Developer,
   broker: Broker,
   csv: string,
