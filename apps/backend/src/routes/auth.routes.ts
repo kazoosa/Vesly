@@ -54,6 +54,9 @@ function demoLockedResponse() {
 router.post("/register", async (req, res, next) => {
   try {
     const input = registerSchema.parse(req.body);
+    if (input.email.toLowerCase() === DEMO_EMAIL) {
+      throw Errors.conflict("Email already registered");
+    }
     const existing = await prisma.developer.findUnique({ where: { email: input.email } });
     if (existing) throw Errors.conflict("Email already registered");
     const developer = await prisma.developer.create({
@@ -80,6 +83,12 @@ router.post("/register", async (req, res, next) => {
 router.post("/login", async (req, res, next) => {
   try {
     const input = loginSchema.parse(req.body);
+    if (input.email.toLowerCase() === DEMO_EMAIL) {
+      // The demo account is accessible only via the dedicated /demo flow,
+      // which uses POST /api/demo/session. Refuse normal credential login
+      // so a user can't sign into the shared demo from the login form.
+      throw Errors.unauthorized("Invalid credentials");
+    }
     const developer = await prisma.developer.findUnique({ where: { email: input.email } });
     if (!developer) throw Errors.unauthorized("Invalid credentials");
     const ok = await verifyPassword(input.password, developer.passwordHash);

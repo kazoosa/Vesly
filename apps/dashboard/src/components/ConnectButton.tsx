@@ -114,6 +114,18 @@ export function ConnectButton() {
 
   return (
     <div>
+      {isDemo && (
+        <div
+          role="note"
+          className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] leading-snug text-amber-200 dark:text-amber-300"
+        >
+          <span className="font-semibold uppercase tracking-widest text-[9px] block mb-0.5">
+            Demo simulation
+          </span>
+          This is a simulated brokerage flow. The real account uses SnapTrade
+          and looks different — no real credentials are submitted here.
+        </div>
+      )}
       <button
         className="btn-primary w-full justify-center"
         disabled={!sdkReady || busy}
@@ -124,7 +136,7 @@ export function ConnectButton() {
       {error && <div className="text-xs text-rose-400 mt-2">{error}</div>}
 
       <SnapTradeReact
-        loginLink={snapLoginLink ?? undefined}
+        loginLink={snapLoginLink ?? ""}
         isOpen={Boolean(snapLoginLink)}
         close={() => setSnapLoginLink(null)}
         onSuccess={(id: unknown) => {

@@ -4,6 +4,7 @@ import { apiFetch } from "../lib/api";
 import { fmtUsd, fmtPct, PlText } from "../components/money";
 import { Link } from "react-router-dom";
 import { useChartTheme, tooltipProps } from "../lib/chartTheme";
+import { TickerAvatar } from "./stocks/StockDetail";
 import {
   AreaChart,
   Area,
@@ -107,11 +108,20 @@ export function OverviewPage() {
 
       {empty && (
         <div className="card p-10 text-center">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-bg-overlay border border-border-subtle flex items-center justify-center">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-fg-secondary" aria-hidden>
+              <path d="M3 3v18h18" />
+              <path d="M7 14l4-4 4 4 5-6" />
+            </svg>
+          </div>
           <h2 className="text-fg-primary mb-2">Start your portfolio</h2>
           <p className="text-sm text-fg-secondary max-w-md mx-auto mb-5">
             Use the <span className="text-fg-primary font-medium">+ Connect brokerage</span> button in the sidebar to link your first account.
           </p>
-          <p className="text-[10px] text-fg-muted mt-4">
+          <Link to="/app/accounts" className="btn-primary text-xs inline-flex">
+            Go to Accounts
+          </Link>
+          <p className="text-[10px] text-fg-muted mt-5">
             Your data syncs automatically once connected. Supports Fidelity, Schwab, Robinhood, Vanguard, and 30+ others.
           </p>
         </div>
@@ -130,13 +140,12 @@ export function OverviewPage() {
               </div>
               <div className="space-y-2">
                 {holdings.data?.holdings.slice(0, 6).map((h) => (
-                  <div
+                  <Link
                     key={h.ticker_symbol}
-                    className="flex items-center gap-3 py-2 border-b border-border-subtle/50 last:border-0"
+                    to={`/app/stocks?symbol=${encodeURIComponent(h.ticker_symbol)}`}
+                    className="flex items-center gap-3 py-2 px-2 -mx-2 rounded-md hover:bg-bg-hover/60 border-b border-border-subtle/50 last:border-0 transition-colors"
                   >
-                    <div className="w-10 h-10 rounded-lg bg-bg-overlay flex items-center justify-center text-xs font-semibold font-num text-fg-primary">
-                      {h.ticker_symbol.slice(0, 4)}
-                    </div>
+                    <TickerAvatar symbol={h.ticker_symbol} size={36} />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-fg-primary font-medium truncate">{h.ticker_symbol}</div>
                       <div className="text-xs text-fg-muted truncate">{h.name}</div>
@@ -150,8 +159,13 @@ export function OverviewPage() {
                     <div className="w-16 text-right">
                       <div className="text-xs text-fg-muted">{h.weight_pct.toFixed(1)}%</div>
                     </div>
-                  </div>
+                  </Link>
                 ))}
+                {(!holdings.data || holdings.data.holdings.length === 0) && (
+                  <div className="text-xs text-fg-muted py-6 text-center">
+                    No holdings yet.
+                  </div>
+                )}
               </div>
             </div>
 

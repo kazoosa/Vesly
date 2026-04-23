@@ -36,28 +36,24 @@ export function StockList({
   return (
     <div className="card p-3 flex flex-col min-h-0 max-h-[calc(100vh-6rem)]">
       <div className="relative mb-1">
+        <svg
+          aria-hidden
+          className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted pointer-events-none"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search symbols"
-          className={`input w-full text-sm ${hasQuery ? "pl-3" : "pl-8"}`}
+          className="input w-full text-sm pl-9"
           aria-label="Search stocks"
         />
-        {/* Hide the icon while the user is typing so it never overlaps
-            the text — we drop the left padding above to compensate. */}
-        {!hasQuery && (
-          <svg
-            aria-hidden
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-fg-muted pointer-events-none"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-        )}
       </div>
       <div className="text-[10px] uppercase tracking-widest text-fg-muted font-mono px-1 pb-1">
         Showing {filtered.length} symbol{filtered.length === 1 ? "" : "s"}

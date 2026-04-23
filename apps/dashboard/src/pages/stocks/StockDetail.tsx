@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import {
   Area,
@@ -58,14 +58,31 @@ export function StockDetail({
   range: HistoryRange;
   onRangeChange: (r: HistoryRange) => void;
 }) {
+  const refreshing =
+    market.quote.isFetching || market.history.isFetching || position.isFetching;
+  async function handleRefresh() {
+    if (refreshing) return;
+    await Promise.all([
+      market.quote.refetch(),
+      market.history.refetch(),
+      market.news.refetch(),
+      position.refetch(),
+    ]);
+  }
+
   return (
     <div className="space-y-4 md:space-y-5">
-      <StockHeader symbol={symbol} quote={market.quote} />
+      <StockHeader
+        symbol={symbol}
+        quote={market.quote}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+      />
       <HistoryChart history={market.history} range={range} onRangeChange={onRangeChange} />
       <TopRow position={position} quote={market.quote} />
       <PLPerformanceSection position={position} />
       <PortfolioInfoRow position={position} quote={market.quote} />
-      <MidRow position={position} news={market.news} />
+      <MidRow symbol={symbol} position={position} news={market.news} />
       <DividendCalendar position={position} />
       <StockTransactionsTable position={position} />
     </div>
@@ -77,9 +94,13 @@ export function StockDetail({
 function StockHeader({
   symbol,
   quote,
+  onRefresh,
+  refreshing,
 }: {
   symbol: string;
   quote: UseQueryResult<StockQuote>;
+  onRefresh: () => void;
+  refreshing: boolean;
 }) {
   const q = quote.data;
   const syncedMinutesAgo = useMemo(() => {
@@ -158,6 +179,32 @@ function StockHeader({
         </span>
         <button
           type="button"
+          className="p-1.5 rounded-md text-fg-muted hover:text-fg-primary hover:bg-bg-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={onRefresh}
+          disabled={refreshing}
+          title="Refresh quote, history & position"
+          aria-label="Refresh data"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={refreshing ? "animate-spin" : ""}
+            aria-hidden
+          >
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            <path d="M3 21v-5h5" />
+          </svg>
+        </button>
+        <button
+          type="button"
           className="btn-ghost text-xs"
           title="Notes are saved in this browser only"
           onClick={() => {
@@ -172,6 +219,12 @@ function StockHeader({
   );
 }
 
+/**
+ * Header logo. Tries the Clearbit-mapped URL first; on 404/error falls
+ * back to a colored disc whose hue is hashed from the ticker so the same
+ * symbol always looks the same. White bold initials over a vivid hue
+ * reads like a real brand mark instead of "two random letters."
+ */
 function InitialsOrLogo({ symbol, logoUrl }: { symbol: string; logoUrl: string | null }) {
   const [errored, setErrored] = useState(false);
   if (logoUrl && !errored) {
@@ -180,16 +233,38 @@ function InitialsOrLogo({ symbol, logoUrl }: { symbol: string; logoUrl: string |
         src={logoUrl}
         alt=""
         onError={() => setErrored(true)}
-        className="w-11 h-11 rounded-full bg-bg-inset border border-border-subtle"
+        className="w-11 h-11 rounded-full bg-white object-contain border border-border-subtle"
       />
     );
   }
+  return <TickerAvatar symbol={symbol} size={44} />;
+}
+
+function tickerHashHue(symbol: string): number {
+  let h = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    h = (h * 31 + symbol.charCodeAt(i)) >>> 0;
+  }
+  return h % 360;
+}
+
+export function TickerAvatar({ symbol, size = 32 }: { symbol: string; size?: number }) {
+  const hue = tickerHashHue(symbol.toUpperCase());
+  const initials = symbol.slice(0, symbol.length >= 3 ? 3 : 2).toUpperCase();
+  const fontPx = Math.max(10, Math.round(size * 0.36));
   return (
     <div
-      className="w-11 h-11 rounded-full flex items-center justify-center border border-border-subtle bg-bg-inset text-fg-primary text-sm font-num font-semibold"
+      className="rounded-full flex items-center justify-center font-num font-bold text-white shrink-0"
+      style={{
+        width: size,
+        height: size,
+        background: `linear-gradient(135deg, hsl(${hue} 70% 48%) 0%, hsl(${(hue + 28) % 360} 65% 38%) 100%)`,
+        fontSize: fontPx,
+        letterSpacing: "-0.02em",
+      }}
       aria-hidden
     >
-      {symbol.slice(0, 2)}
+      {initials}
     </div>
   );
 }
@@ -466,17 +541,83 @@ function WinRateDonut({
 
 /* ------------------------------------------------- Realized P/L performance */
 
+type PerfPeriod = "all" | "ytd" | "1y" | "thisYear" | "lastYear";
+
 function PLPerformanceSection({
   position,
 }: {
   position: UseQueryResult<PortfolioBySymbol>;
 }) {
-  const ws = position.data?.winStats;
-  const closed = position.data?.lots?.closed ?? [];
-  const maxAbs = Math.max(
-    1,
-    ...closed.map((l) => Math.abs(l.realizedPlPct)),
-  );
+  const [period, setPeriod] = useState<PerfPeriod>("all");
+  const closedAll = position.data?.lots?.closed ?? [];
+
+  const now = new Date();
+  const closed = useMemo(() => {
+    if (period === "all") return closedAll;
+    const start = (() => {
+      switch (period) {
+        case "ytd":
+        case "thisYear":
+          return new Date(now.getFullYear(), 0, 1);
+        case "lastYear":
+          return new Date(now.getFullYear() - 1, 0, 1);
+        case "1y": {
+          const d = new Date(now);
+          d.setFullYear(d.getFullYear() - 1);
+          return d;
+        }
+      }
+    })();
+    const end =
+      period === "lastYear" ? new Date(now.getFullYear(), 0, 1) : null;
+    return closedAll.filter((l) => {
+      const c = new Date(l.closedDate);
+      if (c < start) return false;
+      if (end && c >= end) return false;
+      return true;
+    });
+  }, [closedAll, period, now]);
+
+  // Recompute the headline stats over the filtered window so the
+  // numbers actually change when the user toggles a period.
+  const ws = useMemo(() => {
+    const wins = closed.filter((l) => l.outcome === "win");
+    const losses = closed.filter((l) => l.outcome === "loss");
+    const avgWin = wins.length
+      ? wins.reduce((s, l) => s + l.realizedPl, 0) / wins.length
+      : 0;
+    const avgLoss = losses.length
+      ? losses.reduce((s, l) => s + l.realizedPl, 0) / losses.length
+      : 0;
+    const best = closed.reduce(
+      (b, l) => (b == null || l.realizedPl > b ? l.realizedPl : b),
+      Number.NEGATIVE_INFINITY as number,
+    );
+    const worst = closed.reduce(
+      (w, l) => (w == null || l.realizedPl < w ? l.realizedPl : w),
+      Number.POSITIVE_INFINITY as number,
+    );
+    return {
+      winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
+      winCount: wins.length,
+      lossCount: losses.length,
+      avgWin,
+      avgLoss,
+      payoffRatio: avgLoss < 0 ? Math.abs(avgWin / avgLoss) : 0,
+      bestTrade: closed.length ? best : 0,
+      worstTrade: closed.length ? worst : 0,
+    };
+  }, [closed]);
+
+  const maxAbs = Math.max(1, ...closed.map((l) => Math.abs(l.realizedPlPct)));
+
+  const tabs: { key: PerfPeriod; label: string }[] = [
+    { key: "all", label: "All-time" },
+    { key: "ytd", label: "YTD" },
+    { key: "1y", label: "1Y" },
+    { key: "thisYear", label: String(now.getFullYear()) },
+    { key: "lastYear", label: String(now.getFullYear() - 1) },
+  ];
 
   return (
     <div className="card p-4 md:p-5">
@@ -487,29 +628,45 @@ function PLPerformanceSection({
             How your closed trades actually performed.
           </div>
         </div>
-        {/* Toggle is visual only for MVP */}
-        <div className="inline-flex rounded-md border border-border-subtle bg-bg-inset p-0.5 text-[11px] font-mono">
-          <span className="px-2 py-1 bg-bg-raised text-fg-primary rounded shadow-card">
-            All-time
-          </span>
-          <span className="px-2 py-1 text-fg-muted">YTD</span>
-          <span className="px-2 py-1 text-fg-muted">2025</span>
-          <span className="px-2 py-1 text-fg-muted">2024</span>
+        <div
+          role="tablist"
+          aria-label="Performance period"
+          className="inline-flex rounded-md border border-border-subtle bg-bg-inset p-0.5 text-[11px] font-mono"
+        >
+          {tabs.map((t) => {
+            const active = period === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setPeriod(t.key)}
+                className={`px-2 py-1 rounded transition-colors ${
+                  active
+                    ? "bg-bg-raised text-fg-primary shadow-card"
+                    : "text-fg-muted hover:text-fg-primary"
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mt-4 text-xs">
-        <Stat label="Win rate" value={`${(ws?.winRate ?? 0).toFixed(0)}%`}
-          sub={`${ws?.winCount ?? 0}W · ${ws?.lossCount ?? 0}L`} />
-        <Stat label="Avg win" value={fmtUsd(ws?.avgWin ?? 0, { showSign: true })}
+        <Stat label="Win rate" value={`${ws.winRate.toFixed(0)}%`}
+          sub={`${ws.winCount}W · ${ws.lossCount}L`} />
+        <Stat label="Avg win" value={fmtUsd(ws.avgWin, { showSign: true })}
           sub="per closed lot" tone="pos" />
-        <Stat label="Avg loss" value={fmtUsd(ws?.avgLoss ?? 0, { showSign: true })}
+        <Stat label="Avg loss" value={fmtUsd(ws.avgLoss, { showSign: true })}
           sub="per closed lot" tone="neg" />
-        <Stat label="Payoff ratio" value={`${(ws?.payoffRatio ?? 0).toFixed(2)}×`}
+        <Stat label="Payoff ratio" value={`${ws.payoffRatio.toFixed(2)}×`}
           sub="win / loss size" />
-        <Stat label="Best trade" value={fmtUsd(ws?.bestTrade ?? 0, { showSign: true })}
+        <Stat label="Best trade" value={fmtUsd(ws.bestTrade, { showSign: true })}
           sub="" tone="pos" />
-        <Stat label="Worst trade" value={fmtUsd(ws?.worstTrade ?? 0, { showSign: true })}
+        <Stat label="Worst trade" value={fmtUsd(ws.worstTrade, { showSign: true })}
           sub="" tone="neg" />
       </div>
 
@@ -518,7 +675,11 @@ function PLPerformanceSection({
           Closed lots · sorted by date
         </div>
         {closed.length === 0 ? (
-          <EmptyState message="No closed lots yet." />
+          <EmptyState message={
+            period === "all"
+              ? "No closed lots yet."
+              : "No closed lots in this period."
+          } />
         ) : (
           <table className="w-full text-xs font-num">
             <thead className="text-[10px] uppercase tracking-widest text-fg-muted">
@@ -729,16 +890,18 @@ function MiniPieDonut({ pct }: { pct: number }) {
 /* -------------------------------------- Mid row: activity + notes + news */
 
 function MidRow({
+  symbol,
   position,
   news,
 }: {
+  symbol: string;
   position: UseQueryResult<PortfolioBySymbol>;
   news: UseQueryResult<NewsResponse>;
 }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr_1fr] gap-3 md:gap-4">
       <ActivityTimeline activity={position.data?.activity ?? []} />
-      <NotesPanel />
+      <NotesPanel symbol={symbol} />
       <HeadlinesPanel news={news} />
     </div>
   );
@@ -814,9 +977,53 @@ function ActivityRow({ a }: { a: ActivityItem }) {
   );
 }
 
-function NotesPanel() {
-  const [notes, setNotes] = useState<Array<{ id: string; date: string; text: string }>>([]);
+interface StockNote {
+  id: string;
+  date: string;
+  text: string;
+}
+
+const NOTES_KEY_PREFIX = "beacon.stockNotes.";
+
+function loadNotes(symbol: string): StockNote[] {
+  if (!symbol) return [];
+  try {
+    const raw = localStorage.getItem(NOTES_KEY_PREFIX + symbol);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (n): n is StockNote =>
+        n && typeof n.id === "string" && typeof n.text === "string" && typeof n.date === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveNotes(symbol: string, notes: StockNote[]) {
+  if (!symbol) return;
+  try {
+    localStorage.setItem(NOTES_KEY_PREFIX + symbol, JSON.stringify(notes));
+  } catch { /* private mode / quota — ignore */ }
+}
+
+function NotesPanel({ symbol }: { symbol: string }) {
+  const [notes, setNotes] = useState<StockNote[]>([]);
   const [draft, setDraft] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
+  // Reload from storage whenever the user navigates between symbols
+  // so each ticker carries its own notebook.
+  useEffect(() => {
+    setNotes(loadNotes(symbol));
+    setPendingDelete(null);
+  }, [symbol]);
+
+  // Persist on every change.
+  useEffect(() => {
+    saveNotes(symbol, notes);
+  }, [symbol, notes]);
 
   function save() {
     const t = draft.trim();
@@ -826,6 +1033,11 @@ function NotesPanel() {
       ...n,
     ]);
     setDraft("");
+  }
+
+  function remove(id: string) {
+    setNotes((n) => n.filter((x) => x.id !== id));
+    setPendingDelete(null);
   }
 
   return (
@@ -857,11 +1069,43 @@ function NotesPanel() {
       </div>
       <ul className="mt-3 space-y-2 max-h-56 overflow-y-auto">
         {notes.map((n) => (
-          <li key={n.id} className="border-l-2 border-border-subtle pl-2">
+          <li key={n.id} className="group relative border-l-2 border-border-subtle pl-2 pr-7">
             <div className="text-[10px] text-fg-muted">
               {new Date(n.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
             </div>
             <div className="text-xs text-fg-secondary whitespace-pre-wrap">{n.text}</div>
+            {pendingDelete === n.id ? (
+              <div className="absolute right-0 top-0 flex items-center gap-1 text-[10px]">
+                <button
+                  type="button"
+                  className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25"
+                  onClick={() => remove(n.id)}
+                  aria-label="Confirm delete note"
+                >
+                  Delete
+                </button>
+                <button
+                  type="button"
+                  className="px-1.5 py-0.5 rounded text-fg-muted hover:text-fg-primary"
+                  onClick={() => setPendingDelete(null)}
+                  aria-label="Cancel delete"
+                >
+                  ×
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="absolute right-0 top-0 p-1 rounded text-fg-muted opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-opacity"
+                onClick={() => setPendingDelete(n.id)}
+                aria-label="Delete note"
+                title="Delete note"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+                </svg>
+              </button>
+            )}
           </li>
         ))}
         {notes.length === 0 && (
@@ -925,12 +1169,16 @@ function DividendCalendar({
 }) {
   const div = position.data?.dividends;
   if (!div) return null;
+  const hasAnyDividends =
+    div.lifetime > 0 ||
+    div.paymentsCount > 0 ||
+    div.byQuarter.some((q) => q.totalPaid > 0);
   return (
     <div className="card p-4 md:p-5">
       <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
         <Eyebrow>
           Dividend calendar
-          {div.nextPaymentDateEstimate && (
+          {hasAnyDividends && div.nextPaymentDateEstimate && (
             <span className="ml-2 normal-case tracking-normal text-[11px] text-fg-muted">
               · next payment{" "}
               {new Date(div.nextPaymentDateEstimate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
@@ -939,44 +1187,68 @@ function DividendCalendar({
             </span>
           )}
         </Eyebrow>
-        <div className="text-[11px] text-fg-muted font-num">
-          annualized {fmtUsd(div.annualizedEstimate)}
-        </div>
-      </div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {div.byQuarter.map((q, i) => (
-          <div key={i} className="rounded-md border border-border-subtle bg-bg-inset p-3">
-            <div className="flex items-center justify-between text-[10px] mb-1">
-              <span className="font-mono uppercase tracking-widest text-fg-muted">
-                {q.quarter} '{String(q.year).slice(-2)}
-              </span>
-              <span
-                className={`badge text-[9px] ${
-                  q.status === "PAID" ? "badge-green" : "badge-amber"
-                }`}
-              >
-                {q.status}
-              </span>
-            </div>
-            <div className={`text-base font-num font-semibold ${q.totalPaid > 0 ? "pos" : "text-fg-fainter"}`}>
-              {q.totalPaid > 0 ? fmtUsd(q.totalPaid, { showSign: true }) : "—"}
-            </div>
-            {q.totalPaid > 0 ? (
-              <div className="text-[10px] text-fg-muted font-num mt-1">
-                ex-date: {q.exDate ? new Date(q.exDate).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
-                <br />
-                pays: {q.payDate ? new Date(q.payDate).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
-                <br />
-                yield: {q.yieldPct !== null ? `${q.yieldPct.toFixed(2)}%` : "—"}
-              </div>
-            ) : (
-              <div className="text-[10px] text-fg-fainter mt-1">
-                No dividend this quarter
-              </div>
-            )}
+        {hasAnyDividends && (
+          <div className="text-[11px] text-fg-muted font-num">
+            annualized {fmtUsd(div.annualizedEstimate)}
           </div>
-        ))}
+        )}
       </div>
+      {!hasAnyDividends ? (
+        <div className="flex flex-col items-center justify-center text-center py-10 px-4 rounded-md border border-dashed border-border-subtle">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            className="text-fg-fainter mb-2"
+            aria-hidden
+          >
+            <rect x="3" y="5" width="18" height="16" rx="2" />
+            <path d="M3 10h18M8 3v4M16 3v4" />
+          </svg>
+          <div className="text-sm text-fg-secondary">No dividend data yet</div>
+          <div className="text-[11px] text-fg-muted mt-1">
+            Dividend payments will appear here once they're recorded.
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {div.byQuarter.map((q, i) => (
+            <div key={i} className="rounded-md border border-border-subtle bg-bg-inset p-3">
+              <div className="flex items-center justify-between text-[10px] mb-1">
+                <span className="font-mono uppercase tracking-widest text-fg-muted">
+                  {q.quarter} '{String(q.year).slice(-2)}
+                </span>
+                <span
+                  className={`badge text-[9px] ${
+                    q.status === "PAID" ? "badge-green" : "badge-amber"
+                  }`}
+                >
+                  {q.status}
+                </span>
+              </div>
+              <div className={`text-base font-num font-semibold ${q.totalPaid > 0 ? "pos" : "text-fg-fainter"}`}>
+                {q.totalPaid > 0 ? fmtUsd(q.totalPaid, { showSign: true }) : "—"}
+              </div>
+              {q.totalPaid > 0 ? (
+                <div className="text-[10px] text-fg-muted font-num mt-1">
+                  ex-date: {q.exDate ? new Date(q.exDate).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
+                  <br />
+                  pays: {q.payDate ? new Date(q.payDate).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
+                  <br />
+                  yield: {q.yieldPct !== null ? `${q.yieldPct.toFixed(2)}%` : "—"}
+                </div>
+              ) : (
+                <div className="text-[10px] text-fg-fainter mt-1">
+                  No dividend this quarter
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

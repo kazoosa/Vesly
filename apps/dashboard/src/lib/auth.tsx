@@ -5,6 +5,7 @@ interface AuthState {
   accessToken: string | null;
   refreshToken: string | null;
   developer: { id: string; email: string; name: string } | null;
+  isDemo: boolean;
 }
 
 interface AuthContextValue extends AuthState {
@@ -12,6 +13,7 @@ interface AuthContextValue extends AuthState {
     email: string,
     password: string,
   ) => Promise<void>;
+  loginDemo: () => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (name: string) => Promise<void>;
@@ -20,24 +22,60 @@ interface AuthContextValue extends AuthState {
   deleteAccount: (confirm_email: string) => Promise<void>;
 }
 
-const STORAGE_KEY = "finlink_auth";
+/**
+ * Real sessions live in localStorage so they survive tab close.
+ * Demo sessions live in sessionStorage — a per-tab bucket — so opening
+ * the demo in one tab can't clobber a real session in another tab.
+ * On hydration a tab prefers its own sessionStorage (demo) over the
+ * shared localStorage (real), which is why demo-in-tab-2 doesn't
+ * flip real-in-tab-1 on reload.
+ */
+const LS_KEY = "finlink_auth";
+const SS_KEY = "finlink_auth_demo";
+
+const EMPTY: AuthState = { accessToken: null, refreshToken: null, developer: null, isDemo: false };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const API = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:3001";
 
+function readStored(): AuthState {
+  try {
+    const demoRaw = sessionStorage.getItem(SS_KEY);
+    if (demoRaw) {
+      const parsed = JSON.parse(demoRaw) as AuthState;
+      if (parsed?.accessToken) return { ...parsed, isDemo: true };
+    }
+  } catch { /* ignore */ }
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as AuthState;
+      if (parsed?.accessToken) return { ...parsed, isDemo: false };
+    }
+  } catch { /* ignore */ }
+  return EMPTY;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
-  const [state, setState] = useState<AuthState>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "") as AuthState;
-    } catch {
-      return { accessToken: null, refreshToken: null, developer: null };
-    }
-  });
+  const [state, setState] = useState<AuthState>(readStored);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (state.isDemo) {
+      try {
+        sessionStorage.setItem(SS_KEY, JSON.stringify(state));
+      } catch { /* ignore */ }
+      return;
+    }
+    // Real session (or signed-out): write to localStorage and make sure
+    // no demo leftovers live in this tab's sessionStorage.
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(state));
+    } catch { /* ignore */ }
+    try {
+      sessionStorage.removeItem(SS_KEY);
+    } catch { /* ignore */ }
   }, [state]);
 
   /**
@@ -73,19 +111,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function login(email: string, password: string) {
     const r = await post("/api/auth/login", { email, password });
     resetQueryCache();
-    setState({ accessToken: r.access_token, refreshToken: r.refresh_token, developer: r.developer });
+    setState({ accessToken: r.access_token, refreshToken: r.refresh_token, developer: r.developer, isDemo: false });
+  }
+  async function loginDemo() {
+    const r = await post("/api/demo/session", {});
+    resetQueryCache();
+    setState({ accessToken: r.access_token, refreshToken: r.refresh_token, developer: r.developer, isDemo: true });
   }
   async function register(name: string, email: string, password: string) {
     const r = await post("/api/auth/register", { name, email, password });
     resetQueryCache();
-    setState({ accessToken: r.access_token, refreshToken: r.refresh_token, developer: r.developer });
+    setState({ accessToken: r.access_token, refreshToken: r.refresh_token, developer: r.developer, isDemo: false });
   }
   async function logout() {
     if (state.refreshToken) {
       await post("/api/auth/logout", { refresh_token: state.refreshToken }).catch(() => {});
     }
     resetQueryCache();
-    setState({ accessToken: null, refreshToken: null, developer: null });
+    // A demo logout only clears this tab (sessionStorage); a real logout
+    // clears the persistent session without touching any demo tab.
+    if (state.isDemo) {
+      try { sessionStorage.removeItem(SS_KEY); } catch { /* ignore */ }
+      setState(EMPTY);
+      return;
+    }
+    setState(EMPTY);
   }
 
   async function updateProfile(name: string) {
@@ -103,13 +153,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signOutAll() {
     await request("/api/auth/sign-out-all", "POST", {});
     resetQueryCache();
-    setState({ accessToken: null, refreshToken: null, developer: null });
+    setState(EMPTY);
   }
 
   async function deleteAccount(confirm_email: string) {
     await request("/api/auth/me", "DELETE", { confirm_email });
     resetQueryCache();
-    setState({ accessToken: null, refreshToken: null, developer: null });
+    setState(EMPTY);
   }
 
   return (
@@ -117,6 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         login,
+        loginDemo,
         register,
         logout,
         updateProfile,

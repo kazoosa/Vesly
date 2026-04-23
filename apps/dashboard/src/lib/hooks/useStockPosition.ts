@@ -127,12 +127,12 @@ export interface PortfolioBySymbol {
 }
 
 export function useStockPosition(symbol: string | null) {
-  const { accessToken } = useAuth();
+  const { accessToken, isDemo } = useAuth();
   const f = apiFetch(() => accessToken);
   const enabled = Boolean(symbol && accessToken);
 
   return useQuery({
-    queryKey: ["stocks", "position", symbol],
+    queryKey: ["stocks", "position", symbol, isDemo ? "demo" : "real"],
     queryFn: async (): Promise<PortfolioBySymbol> => {
       const upper = (symbol ?? "").toUpperCase();
       // 1) Try the server-side aggregate.
@@ -153,7 +153,7 @@ export function useStockPosition(symbol: string | null) {
           `/api/portfolio/transactions?ticker=${encodeURIComponent(upper)}&count=500`,
         ),
       ]);
-      return composeBySymbol(upper, holdingsResp, txsResp.transactions);
+      return composeBySymbol(upper, holdingsResp, txsResp.transactions, isDemo);
     },
     enabled,
     staleTime: 60_000,
@@ -268,6 +268,7 @@ function composeBySymbol(
   symbol: string,
   holdingsResp: HoldingsResp,
   txs: TxRow[],
+  allowMockSeed: boolean,
 ): PortfolioBySymbol {
   const held = holdingsResp.holdings.find(
     (h) => h.ticker_symbol.toUpperCase() === symbol,
@@ -331,11 +332,11 @@ function composeBySymbol(
     }
   }
 
-  // Seed supplementary mock closed lots when the real data is sparse
-  // (common on the demo account and for new sign-ups). Gives the
-  // Realized P/L panels believable numbers without polluting anyone
-  // who has real closed lots of their own.
-  if (closedLots.length < 5) {
+  // Seed supplementary mock closed lots ONLY for the shared demo
+  // account, where new viewers expect a populated Realized P/L panel.
+  // Real users see zeroes/empty until they actually close a position —
+  // we never inject fake P&L into a real portfolio.
+  if (allowMockSeed && closedLots.length < 5) {
     const basis = held?.avg_cost || held?.close_price || 150;
     for (const lot of mockClosedLots(symbol, basis)) closedLots.push(lot);
   }

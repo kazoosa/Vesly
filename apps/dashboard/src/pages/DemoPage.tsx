@@ -17,8 +17,6 @@ import { APP_NAME } from "../lib/brand";
  * because we ate the failure and navigated anyway. No more.
  */
 
-const DEMO_EMAIL = "demo@finlink.dev";
-const DEMO_PASSWORD = "demo1234";
 const API = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:3001";
 
 type Stage = "checking" | "logging-in" | "ok" | "error";
@@ -36,7 +34,7 @@ interface DemoStatus {
 }
 
 export function DemoPage() {
-  const { login } = useAuth();
+  const { loginDemo } = useAuth();
   const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>("checking");
   const [status, setStatus] = useState<DemoStatus | null>(null);
@@ -48,13 +46,10 @@ export function DemoPage() {
     if (startedRef.current) return;
     startedRef.current = true;
 
-    // Belt + braces: blow away any stored auth BEFORE the pre-flight so
-    // stale JWTs from a recreated demo developer or a rotated
-    // JWT_SECRET can't leak into the /app page below. The subsequent
-    // login() writes a fresh session to the same key.
-    try {
-      localStorage.removeItem("finlink_auth");
-    } catch { /* SSR / private mode — ignore */ }
+    // Demo sessions are isolated to this tab via sessionStorage (see
+    // auth.tsx). We deliberately do NOT touch localStorage here — other
+    // tabs signed into a real account must stay signed into that
+    // account when this tab enters the demo.
 
     let cancelled = false;
 
@@ -102,22 +97,19 @@ export function DemoPage() {
         return;
       }
 
-      // Phase 2 — always sign in. We deliberately ignore any pre-existing
-      // session: if the demo developer was re-created on the backend (e.g.
-      // after a `prisma db push --accept-data-loss`) the existing JWT
-      // references a developer ID that no longer exists, and the dashboard
-      // silently renders an empty portfolio. A fresh login guarantees the
-      // token matches the current demo developer.
+      // Phase 2 — mint a fresh demo session for THIS tab. The session
+      // lives in sessionStorage and never touches the shared localStorage
+      // key, so any other tab signed into a real account is unaffected.
       try {
         setStage("logging-in");
-        await login(DEMO_EMAIL, DEMO_PASSWORD);
+        await loginDemo();
       } catch (err) {
         if (cancelled) return;
         setErrorTitle("Demo login failed.");
         setErrorDetail(
           err instanceof Error && err.message
             ? err.message
-            : "POST /api/auth/login rejected the demo credentials.",
+            : "POST /api/demo/session failed to mint a demo token.",
         );
         setStage("error");
         return;

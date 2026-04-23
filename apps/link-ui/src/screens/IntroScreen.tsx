@@ -9,6 +9,17 @@ export function IntroScreen({
 }) {
   return (
     <div className="flex-1 flex flex-col p-6">
+      <div
+        role="note"
+        className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-300"
+      >
+        <span className="font-semibold uppercase tracking-widest text-[9px] block mb-0.5">
+          Demo simulation
+        </span>
+        This is a demo of the connection flow. The version on a real account
+        uses SnapTrade and looks different — no real credentials are submitted
+        here.
+      </div>
       <div className="flex-1 flex flex-col items-center justify-center text-center">
         <div className="w-16 h-16 bg-accent-green/10 rounded-2xl flex items-center justify-center text-accent-green mb-6">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

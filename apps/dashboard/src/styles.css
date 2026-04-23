@@ -60,10 +60,10 @@
   --border-subtle: 31  44  56;  /* #1F2C38 */
   --border-strong: 54  74  92;  /* #364A5C */
 
-  --fg-primary:  236 242 246;   /* #ECF2F6 */
-  --fg-secondary: 179 194 206;  /* #B3C2CE */
-  --fg-muted:    130 148 164;   /* #8294A4 */
-  --fg-fainter:   85 101 118;   /* #556576 */
+  --fg-primary:  240 246 250;   /* #F0F6FA — brighter for AAA */
+  --fg-secondary: 188 202 214;  /* #BCCAD6 */
+  --fg-muted:    142 160 176;   /* #8EA0B0 — lifted for AA */
+  --fg-fainter:   95 113 130;   /* #5F7182 */
 
   /* Brand inverts to near-white in dark */
   --brand:       236 242 246;

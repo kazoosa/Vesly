@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { prisma } from "../db.js";
 import { config } from "../config.js";
+import { signDeveloperAccess, signDeveloperRefresh } from "../utils/jwt.js";
+import { redis } from "../redis.js";
+import { Errors } from "../utils/errors.js";
 
 /**
  * Public (no-auth) diagnostic endpoints for the demo account.
@@ -74,6 +77,28 @@ router.get("/status", async (_req, res, next) => {
       securityCount,
       serverTimeMs: Date.now(),
       environment: config.ENVIRONMENT,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * Issue a session for the shared demo account without a password.
+ * The demo is deliberately unreachable via /api/auth/login; this is
+ * the only way in, and it's used by the /demo page on the dashboard.
+ */
+router.post("/session", async (_req, res, next) => {
+  try {
+    const developer = await prisma.developer.findUnique({ where: { email: DEMO_EMAIL } });
+    if (!developer) throw Errors.unauthorized("Demo account not provisioned");
+    const access = signDeveloperAccess(developer.id, developer.email);
+    const { token: refresh, jti } = signDeveloperRefresh(developer.id, developer.email);
+    await redis.set(`refresh:${developer.id}:${jti}`, "1", "EX", 30 * 24 * 3600);
+    res.json({
+      developer: { id: developer.id, email: developer.email, name: developer.name },
+      access_token: access,
+      refresh_token: refresh,
     });
   } catch (e) {
     next(e);
