@@ -54,6 +54,13 @@ function makeLogoUrl(website?: string | null): string | null {
   }
 }
 
+// Module-local error surface so the handler can report what actually
+// went wrong — visible via the X-Yahoo-Debug response header.
+let lastError: string | null = null;
+export function getLastError(): string | null {
+  return lastError;
+}
+
 export async function fetchQuote(symbol: string): Promise<StockQuote | null> {
   try {
     const [q, summary] = await Promise.all([
@@ -64,7 +71,7 @@ export async function fetchQuote(symbol: string): Promise<StockQuote | null> {
         })
         .catch(() => null),
     ]);
-    if (!q) return null;
+    if (!q) { lastError = "empty quote response"; return null; }
 
     const price = (q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice ?? 0) as number;
     const prev = (q.regularMarketPreviousClose ?? price) as number;
@@ -105,6 +112,7 @@ export async function fetchQuote(symbol: string): Promise<StockQuote | null> {
       asOf: new Date().toISOString(),
     };
   } catch (err) {
+    lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     console.error("[yahoo.fetchQuote]", symbol, err);
     return null;
   }

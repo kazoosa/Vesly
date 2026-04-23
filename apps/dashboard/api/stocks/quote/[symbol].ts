@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   fetchQuote,
+  getLastError,
   isValidSymbol,
   normalizeSymbol,
   setCors,
@@ -26,6 +27,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const quote = await fetchQuote(symbol);
     if (!quote) {
+      // Surface the underlying yahoo-finance2 error via a debug header
+      // so we can see why fetchQuote is returning null from the client.
+      res.setHeader("X-Yahoo-Debug", getLastError() ?? "null returned");
       return res.status(200).json({
         symbol,
         name: symbol,
@@ -55,6 +59,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({
       error: "FETCH_FAILED",
       message: err instanceof Error ? err.message : "Unknown error",
+      stack: err instanceof Error ? err.stack?.slice(0, 500) : null,
     });
   }
 }
