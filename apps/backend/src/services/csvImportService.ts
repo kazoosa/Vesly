@@ -1097,24 +1097,91 @@ async function importActivityCsv(
     let accountsTouched = 0;
     let transactionsUpserted = 0;
     let dividendsUpserted = 0;
+    let holdingsDerived = 0;
 
     for (const [, bucket] of byAccount) {
       const first = bucket[0]!;
       const mask = (first.accountNumber || "").slice(-4) || "0000";
 
-      // Compute a running cash-flow estimate from the activities. Without
-      // this, activity-only accounts (no prior positions import) had
-      // currentBalance hardcoded to 0 and every Net Worth / per-account
-      // value rendered as $0.00. For mixed accounts (positions + activity)
-      // we keep the higher of the existing balance and the cash-flow
-      // estimate so a positions snapshot's mark-to-market value isn't
-      // overwritten by a partial activity history.
-      const cashFlow = bucket.reduce((sum, a) => {
+      // Replay every transaction chronologically to derive both:
+      //   * the running cash balance (sells/divs/interest/transfers in,
+      //     buys/fees out) — Math.abs in the parser makes act.amount
+      //     always positive, so the sign is decided here by type
+      //   * the per-ticker share count + weighted-average cost basis
+      //     of every position remaining at the end of the history
+      // Without the share-count replay, activity-only imports created
+      // transaction rows but no InvestmentHolding rows, so the user's
+      // hundreds of trades summed to "\$0 in stocks" everywhere outside
+      // the Accounts page even though the trade history was visible.
+      const sorted = [...bucket].sort(
+        (a, b) => a.runDate.getTime() - b.runDate.getTime(),
+      );
+
+      let cashFlow = 0;
+      const positionsByTicker = new Map<
+        string,
+        {
+          ticker: string;
+          name: string;
+          quantity: number;
+          costBasis: number; // total cost basis (basis per share = costBasis/quantity)
+          lastPrice: number; // last seen trade price for valuation
+        }
+      >();
+
+      for (const a of sorted) {
         const amt = Number(a.amount) || 0;
-        if (a.type === "buy" || a.type === "fee") return sum - amt;
-        // sell, dividend, interest, transfer all flow money in.
-        return sum + amt;
-      }, 0);
+        const fees = Number(a.fees) || 0;
+        const qty = Number(a.quantity) || 0;
+        const px = Number(a.price) || 0;
+
+        // Cash leg
+        switch (a.type) {
+          case "buy":
+            cashFlow -= amt + fees;
+            break;
+          case "sell":
+            cashFlow += amt - fees;
+            break;
+          case "fee":
+            cashFlow -= amt;
+            break;
+          case "dividend":
+          case "interest":
+          case "transfer":
+            cashFlow += amt;
+            break;
+        }
+
+        // Holdings leg — only buys/sells move share counts. Dividends
+        // and interest stay in cash; reinvested dividends were already
+        // mapped to "buy" by the classifier so they correctly add
+        // shares here too.
+        if ((a.type === "buy" || a.type === "sell") && a.ticker && qty > 0) {
+          const key = a.ticker.toUpperCase();
+          const pos = positionsByTicker.get(key) ?? {
+            ticker: a.ticker,
+            name: a.description || a.ticker,
+            quantity: 0,
+            costBasis: 0,
+            lastPrice: px,
+          };
+          if (a.type === "buy") {
+            pos.quantity += qty;
+            pos.costBasis += amt + fees; // amt already absolute
+          } else {
+            // Reduce share count and cost basis proportionally on sell
+            // (average-cost method — matches what most retail brokers
+            // report on the positions snapshot we'd otherwise import).
+            const avgBefore = pos.quantity > 0 ? pos.costBasis / pos.quantity : 0;
+            const sellQty = Math.min(qty, pos.quantity);
+            pos.quantity -= sellQty;
+            pos.costBasis = Math.max(0, pos.costBasis - avgBefore * sellQty);
+          }
+          if (px > 0) pos.lastPrice = px;
+          positionsByTicker.set(key, pos);
+        }
+      }
 
       // Find an existing CSV-sourced account with the same mask under
       // this item, else create one. Activity imports attach to prior
@@ -1183,9 +1250,46 @@ async function importActivityCsv(
         if (act.type === "dividend") dividendsUpserted++;
         else transactionsUpserted++;
       }
+
+      // Persist the derived end-of-history positions as InvestmentHoldings.
+      // upsert keyed on (accountId, securityId) so re-running the import
+      // updates the same row instead of colliding on the unique constraint.
+      for (const pos of positionsByTicker.values()) {
+        if (pos.quantity <= 0) continue;
+        const security = await upsertSecurityWithTx(tx, {
+          ticker: pos.ticker,
+          name: pos.name,
+          quantity: pos.quantity,
+          price: pos.lastPrice,
+        });
+        const avgCost = pos.quantity > 0 ? pos.costBasis / pos.quantity : pos.lastPrice;
+        await tx.investmentHolding.upsert({
+          where: {
+            accountId_securityId: { accountId: account.id, securityId: security.id },
+          },
+          create: {
+            accountId: account.id,
+            securityId: security.id,
+            quantity: pos.quantity,
+            institutionPrice: pos.lastPrice,
+            institutionPriceAsOf: new Date(),
+            institutionValue: pos.quantity * pos.lastPrice,
+            costBasis: pos.costBasis,
+            isoCurrencyCode: "USD",
+          },
+          update: {
+            quantity: pos.quantity,
+            institutionPrice: pos.lastPrice,
+            institutionPriceAsOf: new Date(),
+            institutionValue: pos.quantity * pos.lastPrice,
+            costBasis: pos.costBasis,
+          },
+        });
+        holdingsDerived++;
+      }
     }
 
-    return { accountsTouched, transactionsUpserted, dividendsUpserted };
+    return { accountsTouched, transactionsUpserted, dividendsUpserted, holdingsDerived };
   }, { timeout: 30_000, maxWait: 10_000 });
 
   logger.info(
@@ -1196,6 +1300,7 @@ async function importActivityCsv(
       accountsTouched: result.accountsTouched,
       transactionsUpserted: result.transactionsUpserted,
       dividendsUpserted: result.dividendsUpserted,
+      holdingsDerived: result.holdingsDerived,
     },
     "CSV import complete",
   );
@@ -1203,7 +1308,7 @@ async function importActivityCsv(
   return {
     itemId,
     accounts: result.accountsTouched,
-    holdings: 0,
+    holdings: result.holdingsDerived,
     transactions: result.transactionsUpserted,
     dividends: result.dividendsUpserted,
     kind: "activity" as const,
