@@ -872,7 +872,33 @@ async function importPositionsCsv(
       });
       accountsTouched++;
 
+      // Many brokers (Fidelity, Schwab, IBKR) export multiple lots of the
+      // same security as separate rows. The InvestmentHolding table has
+      // a unique (accountId, securityId) constraint, so inserting both
+      // rows triggers a P2002 collision that surfaces as "Your CSV has
+      // duplicate rows for accountId, securityId — combine lots into one
+      // row and retry." even when the CSV is structurally fine.
+      //
+      // Combine duplicate tickers within each account: sum quantity, sum
+      // cost basis, and recompute avgCost. Use the latest non-zero price.
+      const merged = new Map<string, typeof group.positions[number]>();
       for (const pos of group.positions) {
+        const key = (pos.ticker ?? "").toUpperCase();
+        if (!key) continue;
+        const existing = merged.get(key);
+        if (!existing) {
+          merged.set(key, { ...pos });
+          continue;
+        }
+        const totalQty = existing.quantity + pos.quantity;
+        const existingBasis = (existing.avgCost ?? existing.price) * existing.quantity;
+        const incomingBasis = (pos.avgCost ?? pos.price) * pos.quantity;
+        existing.quantity = totalQty;
+        existing.avgCost = totalQty > 0 ? (existingBasis + incomingBasis) / totalQty : pos.price;
+        if (pos.price > 0) existing.price = pos.price;
+      }
+
+      for (const pos of merged.values()) {
         const security = await upsertSecurityWithTx(tx, pos);
         await tx.investmentHolding.create({
           data: {
