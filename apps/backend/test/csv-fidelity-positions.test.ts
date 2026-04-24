@@ -57,11 +57,19 @@ describe("parseFidelity (real-world export shape)", () => {
     expect(opt!.quantity).toBe(-1); // short position
   });
 
-  it("emits both lots when the same ticker appears twice in one account", () => {
+  it("merges same-ticker rows in the same account into one position", () => {
+    // ATAI appears twice for account 237179178 (Margin lot of 300 +
+    // Cash lot of 1000). Beacon's schema is one holding per
+    // (account, security), so the parser must combine lots BEFORE the
+    // importer ever sees them — otherwise the inserter trips the
+    // unique constraint and the user sees the misleading "duplicate
+    // rows for accountId, securityId" error. Merge math: total qty 1300,
+    // weighted avg cost = (300*$4.62 + 1000*$6.43) / 1300 ≈ $6.01.
     const ira = result.find((r) => r.accountMask === "9178")!;
     const ataiRows = ira.positions.filter((p) => p.ticker === "ATAI");
-    expect(ataiRows).toHaveLength(2);
-    expect(ataiRows.map((p) => p.quantity).sort((a, b) => a - b)).toEqual([300, 1000]);
+    expect(ataiRows).toHaveLength(1);
+    expect(ataiRows[0]!.quantity).toBe(1300);
+    expect(ataiRows[0]!.avgCost).toBeCloseTo((300 * 4.62 + 1000 * 6.43) / 1300, 2);
   });
 
   it("skips pending-activity rows entirely", () => {

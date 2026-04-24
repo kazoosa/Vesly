@@ -208,7 +208,42 @@ function parseFidelity(csv: string): ParsedResult[] {
       type: r["Type"]?.trim() || undefined,
     });
   }
-  return [...grouped.values()];
+
+  return mergeDuplicateLots([...grouped.values()]);
+}
+
+/**
+ * Aggregate same-ticker rows within each account into a single position.
+ * Beacon's schema is one InvestmentHolding per (account, security), so
+ * any broker that exports a security across multiple rows (Fidelity's
+ * margin/cash split being the loud example, but Schwab and IBKR also
+ * do this for separate tax lots) needs this collapse before insert.
+ *
+ * Sum quantity, weight-average the cost basis (existing avgCost * qty +
+ * incoming avgCost * qty / total qty), and prefer the latest non-zero
+ * price. Applied at the parser layer so the importer's downstream
+ * defensive aggregation isn't the only line of protection.
+ */
+function mergeDuplicateLots(buckets: ParsedResult[]): ParsedResult[] {
+  for (const bucket of buckets) {
+    const merged = new Map<string, ParsedPosition>();
+    for (const pos of bucket.positions) {
+      const key = pos.ticker.toUpperCase();
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, { ...pos });
+        continue;
+      }
+      const totalQty = existing.quantity + pos.quantity;
+      const existingBasis = (existing.avgCost ?? existing.price) * existing.quantity;
+      const incomingBasis = (pos.avgCost ?? pos.price) * pos.quantity;
+      existing.quantity = totalQty;
+      existing.avgCost = totalQty !== 0 ? (existingBasis + incomingBasis) / totalQty : pos.price;
+      if (pos.price > 0) existing.price = pos.price;
+    }
+    bucket.positions = [...merged.values()];
+  }
+  return buckets;
 }
 
 /**
@@ -651,7 +686,10 @@ function parseGenericActivity(broker: Broker, csv: string): ParsedActivity[] {
 export function previewCsv(broker: Broker, csv: string): ParsedResult[] {
   const parser = getParser(broker);
   try {
-    return parser(stripBom(csv));
+    // mergeDuplicateLots is also called inside parseFidelity, but
+    // applying it here too means every other broker's parser is
+    // protected for free without each one having to remember.
+    return mergeDuplicateLots(parser(stripBom(csv)));
   } catch (err) {
     logger.warn({ err, broker }, "CSV parse failed");
     throw Errors.badRequest(
