@@ -426,6 +426,26 @@ export async function syncDeveloper(developer: Developer): Promise<{
     );
   }
 
+  // Fire-and-forget: refresh Tradier Greeks for any option contracts
+  // this user holds. Doesn't block the sync response — the user gets
+  // their holdings + transactions back immediately, Greeks land on
+  // the next page render. Errors are absorbed (logged in the job
+  // itself) so a Tradier outage can't break the SnapTrade flow.
+  void (async () => {
+    try {
+      const { refreshOptionQuotes } = await import("../jobs/refreshOptionQuotes.js");
+      const result = await refreshOptionQuotes(developer.id);
+      if (result.refreshed > 0 || result.errored > 0) {
+        logger.info(
+          { developerId: developer.id, ...result },
+          "snaptrade post-sync: tradier refresh",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, developerId: developer.id }, "tradier post-sync refresh failed");
+    }
+  })();
+
   logger.info(
     {
       developerId: developer.id,

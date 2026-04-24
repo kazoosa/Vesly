@@ -894,29 +894,74 @@ export async function getPortfolioBySymbol(developerId: string, rawSymbol: strin
   // The UI uses `option != null` as the signal to render an option
   // detail layout instead of the equity layout.
   const oc = security.optionContract;
-  const optionPayload = oc
-    ? {
-        underlying_ticker: oc.underlying.tickerSymbol,
-        underlying_name: oc.underlying.name,
-        option_type: oc.optionType as "call" | "put",
-        strike: oc.strike,
-        expiry: oc.expiry.toISOString().slice(0, 10),
-        multiplier: oc.multiplier,
-        days_to_expiry: Math.floor(
-          (oc.expiry.getTime() - Date.now()) / 86_400_000,
-        ),
-        // Greeks land in Phase 3 (Tradier integration). Always present
-        // in the response so the UI doesn't have to guard on missing
-        // keys; null when the refresh job hasn't run yet for this
-        // contract.
-        delta: oc.delta ?? null,
-        gamma: oc.gamma ?? null,
-        theta: oc.theta ?? null,
-        vega: oc.vega ?? null,
-        iv: oc.iv ?? null,
-        greeks_as_of: oc.greeksAsOf ? oc.greeksAsOf.toISOString() : null,
+  let optionPayload:
+    | {
+        underlying_ticker: string;
+        underlying_name: string;
+        underlying_price: number;
+        option_type: "call" | "put";
+        strike: number;
+        expiry: string;
+        multiplier: number;
+        days_to_expiry: number;
+        // Per-contract intrinsic value in dollars: max(0, S-K) for
+        // calls, max(0, K-S) for puts. Total dollar intrinsic for
+        // the position is intrinsic × multiplier × |contracts|.
+        intrinsic_per_contract: number;
+        // Same shape, derived from current marketValue. Negative
+        // extrinsic shouldn't happen on a long position but can on
+        // an over-the-counter quote — clamp to 0 for display safety.
+        intrinsic_total: number;
+        extrinsic_total: number;
+        delta: number | null;
+        gamma: number | null;
+        theta: number | null;
+        vega: number | null;
+        iv: number | null;
+        greeks_as_of: string | null;
       }
-    : undefined;
+    | undefined;
+  if (oc) {
+    const underlyingPrice = oc.underlying.closePrice;
+    const isCall = oc.optionType === "call";
+    const intrinsicPerContract = isCall
+      ? Math.max(0, underlyingPrice - oc.strike)
+      : Math.max(0, oc.strike - underlyingPrice);
+    const contracts = Math.abs(sharesHeld);
+    const intrinsicTotal = intrinsicPerContract * oc.multiplier * contracts;
+    // Extrinsic = total market value - intrinsic. For longs this is
+    // the time value remaining; for shorts (negative quantity, negative
+    // marketValue) the math still works because intrinsic is signed
+    // by quantity above. Clamp to 0 for display since negative
+    // extrinsic on a long position is data noise.
+    const absMv = Math.abs(marketValue);
+    const extrinsicTotal = Math.max(0, absMv - intrinsicTotal);
+    optionPayload = {
+      underlying_ticker: oc.underlying.tickerSymbol,
+      underlying_name: oc.underlying.name,
+      underlying_price: underlyingPrice,
+      option_type: oc.optionType as "call" | "put",
+      strike: oc.strike,
+      expiry: oc.expiry.toISOString().slice(0, 10),
+      multiplier: oc.multiplier,
+      days_to_expiry: Math.floor(
+        (oc.expiry.getTime() - Date.now()) / 86_400_000,
+      ),
+      intrinsic_per_contract: +intrinsicPerContract.toFixed(2),
+      intrinsic_total: +intrinsicTotal.toFixed(2),
+      extrinsic_total: +extrinsicTotal.toFixed(2),
+      // Greeks come from the Tradier refresh job (Phase 3). Always
+      // present in the response so the UI doesn't have to guard on
+      // missing keys; null when the refresh job hasn't run yet for
+      // this contract.
+      delta: oc.delta ?? null,
+      gamma: oc.gamma ?? null,
+      theta: oc.theta ?? null,
+      vega: oc.vega ?? null,
+      iv: oc.iv ?? null,
+      greeks_as_of: oc.greeksAsOf ? oc.greeksAsOf.toISOString() : null,
+    };
+  }
 
   return {
     symbol,
