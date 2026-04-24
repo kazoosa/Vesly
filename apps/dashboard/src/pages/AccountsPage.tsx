@@ -64,7 +64,13 @@ export function AccountsPage() {
   }, []);
 
   const refresh = useMutation({
-    mutationFn: () => f("/api/snaptrade/sync", { method: "POST" }),
+    mutationFn: () =>
+      f<{
+        connections: number;
+        accounts: number;
+        holdings: number;
+        transactions: number;
+      }>("/api/snaptrade/sync", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries(),
   });
 
@@ -116,6 +122,31 @@ export function AccountsPage() {
           </button>
         </div>
       </div>
+
+      {refresh.isSuccess && refresh.data && (
+        <div
+          role="status"
+          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300"
+        >
+          Last sync: {refresh.data.accounts} account{refresh.data.accounts === 1 ? "" : "s"},{" "}
+          {refresh.data.holdings} holding{refresh.data.holdings === 1 ? "" : "s"},{" "}
+          {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"}.
+          {refresh.data.transactions === 0 && (
+            <span className="opacity-80">
+              {" "}No new transactions returned — your broker may not expose history through
+              SnapTrade. Use an activity CSV import below to backfill.
+            </span>
+          )}
+        </div>
+      )}
+      {refresh.isError && (
+        <div
+          role="alert"
+          className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300"
+        >
+          Sync failed: {(refresh.error as Error)?.message ?? "Unknown error"}
+        </div>
+      )}
 
       {/* Primary CTA — Connect a brokerage. Always visible, not just
           buried in the empty state. */}

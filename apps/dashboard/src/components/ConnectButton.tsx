@@ -27,6 +27,14 @@ export function ConnectButton() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [snapLoginLink, setSnapLoginLink] = useState<string | null>(null);
+  // Surface what the post-connect sync actually pulled. Without this,
+  // a successful connect that finds zero history is indistinguishable
+  // from a silent failure — both leave Transactions/Dividends blank.
+  const [syncResult, setSyncResult] = useState<
+    | { ok: true; accounts: number; holdings: number; transactions: number }
+    | { ok: false; message: string }
+    | null
+  >(null);
 
   const isDemo = developer?.email === "demo@finlink.dev";
 
@@ -104,10 +112,23 @@ export function ConnectButton() {
   }
 
   async function afterSnapTradeConnect() {
+    setSyncResult(null);
     try {
-      await fetcher("/api/snaptrade/sync", { method: "POST" });
+      const out = await fetcher<{
+        connections: number;
+        accounts: number;
+        holdings: number;
+        transactions: number;
+      }>("/api/snaptrade/sync", { method: "POST" });
+      setSyncResult({
+        ok: true,
+        accounts: out.accounts ?? 0,
+        holdings: out.holdings ?? 0,
+        transactions: out.transactions ?? 0,
+      });
     } catch (err) {
       console.error("sync failed", err);
+      setSyncResult({ ok: false, message: (err as Error).message });
     }
     qc.invalidateQueries();
   }
@@ -134,6 +155,36 @@ export function ConnectButton() {
         {busy ? "Opening…" : "+ Connect brokerage"}
       </button>
       {error && <div className="text-xs text-rose-400 mt-2">{error}</div>}
+
+      {syncResult?.ok === true && (
+        <div
+          role="status"
+          className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-2.5 text-[12px] leading-snug text-emerald-700 dark:text-emerald-300"
+        >
+          <div className="font-semibold">Sync complete</div>
+          <div className="mt-1">
+            {syncResult.accounts} account{syncResult.accounts === 1 ? "" : "s"},{" "}
+            {syncResult.holdings} holding{syncResult.holdings === 1 ? "" : "s"},{" "}
+            {syncResult.transactions} transaction{syncResult.transactions === 1 ? "" : "s"} pulled.
+          </div>
+          {syncResult.transactions === 0 && (
+            <div className="mt-1 text-[11px] opacity-80">
+              No transactions came back from your broker for the last 5 years. Some
+              brokerages (Robinhood, certain Vanguard accounts) only expose holdings
+              through SnapTrade — trade history needs an activity CSV in that case.
+            </div>
+          )}
+        </div>
+      )}
+      {syncResult?.ok === false && (
+        <div
+          role="alert"
+          className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-2.5 text-[12px] leading-snug text-rose-700 dark:text-rose-300"
+        >
+          <div className="font-semibold">Sync failed</div>
+          <div className="mt-1">{syncResult.message}</div>
+        </div>
+      )}
 
       <SnapTradeReact
         loginLink={snapLoginLink ?? ""}
