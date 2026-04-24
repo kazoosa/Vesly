@@ -70,6 +70,9 @@ export function AccountsPage() {
         accounts: number;
         holdings: number;
         transactions: number;
+        raw_activities?: number;
+        skipped_unknown?: number;
+        skipped_labels?: string[];
       }>("/api/snaptrade/sync", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries(),
   });
@@ -126,16 +129,34 @@ export function AccountsPage() {
       {refresh.isSuccess && refresh.data && (
         <div
           role="status"
-          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300"
+          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300 space-y-1"
         >
-          Last sync: {refresh.data.accounts} account{refresh.data.accounts === 1 ? "" : "s"},{" "}
-          {refresh.data.holdings} holding{refresh.data.holdings === 1 ? "" : "s"},{" "}
-          {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"}.
+          <div>
+            Last sync: {refresh.data.accounts} account{refresh.data.accounts === 1 ? "" : "s"},{" "}
+            {refresh.data.holdings} holding{refresh.data.holdings === 1 ? "" : "s"},{" "}
+            {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"}.
+          </div>
           {refresh.data.transactions === 0 && (
-            <span className="opacity-80">
-              {" "}No new transactions returned — your broker may not expose history through
-              SnapTrade. Use an activity CSV import below to backfill.
-            </span>
+            <div className="opacity-80">
+              {(refresh.data.raw_activities ?? 0) === 0 ? (
+                <>
+                  SnapTrade returned <strong>0 raw activities</strong>. Either there's no
+                  trade history in the configured window, or your broker hasn't shared it
+                  yet (some take up to 24h after first connect). Try Refresh again later
+                  or import an activity CSV below.
+                </>
+              ) : (
+                <>
+                  SnapTrade returned <strong>{refresh.data.raw_activities}</strong>{" "}
+                  activities, but{" "}
+                  <strong>{refresh.data.skipped_unknown}</strong> had unrecognised type
+                  labels:{" "}
+                  <code className="text-[10px] bg-fg-primary/10 px-1 rounded">
+                    {(refresh.data.skipped_labels ?? []).join(", ") || "—"}
+                  </code>
+                </>
+              )}
+            </div>
           )}
         </div>
       )}

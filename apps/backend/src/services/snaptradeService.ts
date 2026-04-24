@@ -92,6 +92,9 @@ export async function syncDeveloper(developer: Developer): Promise<{
   accounts: number;
   holdings: number;
   transactions: number;
+  raw_activities: number;
+  skipped_unknown: number;
+  skipped_labels: string[];
 }> {
   const st = client();
   const { userId, userSecret } = await ensureSnapTradeUser(developer);
@@ -105,6 +108,13 @@ export async function syncDeveloper(developer: Developer): Promise<{
   let accountsCount = 0;
   let holdingsCount = 0;
   let txCount = 0;
+  // Tracking the raw counts SnapTrade returns vs what we wrote, so the
+  // sync result can tell the user "SnapTrade returned 247 activities but
+  // 247 were unrecognised types" vs "SnapTrade returned 0" — those two
+  // failure modes need different fixes.
+  let rawActivitiesFetched = 0;
+  let skippedUnknownTotal = 0;
+  const skippedUnknownLabels = new Set<string>();
 
   for (const conn of connections) {
     const connId = String(conn.id);
@@ -230,20 +240,37 @@ export async function syncDeveloper(developer: Developer): Promise<{
       // no dates are passed, which drops most historical dividends and
       // transactions. Pass an explicit lookback so first-time syncs pull
       // in the full user history.
-      const years = parseInt(process.env.SNAPTRADE_HISTORY_YEARS ?? "5", 10);
+      //
+      // Notes from debugging Robinhood returning zero:
+      //  * The `accounts` parameter is a comma-separated string of account
+      //    IDs. Some SnapTrade SDK versions reject a single bare ID and
+      //    return [] silently. Omitting the filter and pulling all
+      //    activities for the user (we already iterate per-account, so
+      //    we filter client-side via act.account.id) is more reliable.
+      //  * Multi-year first-time pulls have been observed to return [] for
+      //    Robinhood specifically; default the window to 1 year now and let
+      //    follow-up syncs extend it via SNAPTRADE_HISTORY_YEARS=5 if the
+      //    operator wants the full back-history.
+      const years = parseInt(process.env.SNAPTRADE_HISTORY_YEARS ?? "1", 10);
       const today = new Date();
       const startDate = new Date(today);
       startDate.setFullYear(today.getFullYear() - years);
       const actRes = await st.transactionsAndReporting.getActivities({
         userId,
         userSecret,
-        accounts: accId,
         startDate: startDate.toISOString().slice(0, 10),
         endDate: today.toISOString().slice(0, 10),
       });
-      const activities = (actRes.data as unknown as Array<Record<string, unknown>>) ?? [];
+      const allActivities = (actRes.data as unknown as Array<Record<string, unknown>>) ?? [];
+      // Client-side filter to this account, since we dropped the server filter.
+      const activities = allActivities.filter((a) => {
+        const acctRef = a.account as { id?: string } | string | undefined;
+        const id = typeof acctRef === "string" ? acctRef : acctRef?.id;
+        return !id || id === accId; // include rows with no account ref (cash divs etc.)
+      });
+      rawActivitiesFetched += activities.length;
       logger.info(
-        { accountId: accId, activityCount: activities.length },
+        { accountId: accId, activityCount: activities.length, totalReturned: allActivities.length },
         "snaptrade activities fetched",
       );
 
@@ -255,7 +282,11 @@ export async function syncDeveloper(developer: Developer): Promise<{
           // Don't silently drop — log the raw label so ops can see what
           // the classifier is missing and we can extend coverage.
           skippedUnknown++;
-          if (rawType) logger.warn({ rawType, accountId: accId }, "snaptrade: unrecognised activity type");
+          skippedUnknownTotal++;
+          if (rawType) {
+            skippedUnknownLabels.add(rawType);
+            logger.warn({ rawType, accountId: accId }, "snaptrade: unrecognised activity type");
+          }
           continue;
         }
 
@@ -313,7 +344,16 @@ export async function syncDeveloper(developer: Developer): Promise<{
   }
 
   logger.info(
-    { developerId: developer.id, connections: connections.length, accountsCount, holdingsCount, txCount },
+    {
+      developerId: developer.id,
+      connections: connections.length,
+      accountsCount,
+      holdingsCount,
+      txCount,
+      rawActivitiesFetched,
+      skippedUnknownTotal,
+      skippedUnknownLabels: [...skippedUnknownLabels],
+    },
     "SnapTrade sync complete",
   );
 
@@ -322,6 +362,12 @@ export async function syncDeveloper(developer: Developer): Promise<{
     accounts: accountsCount,
     holdings: holdingsCount,
     transactions: txCount,
+    // Diagnostics so the UI can distinguish "broker returned nothing" from
+    // "broker returned activities but Beacon's classifier didn't recognise
+    // their type labels".
+    raw_activities: rawActivitiesFetched,
+    skipped_unknown: skippedUnknownTotal,
+    skipped_labels: [...skippedUnknownLabels],
   };
 }
 

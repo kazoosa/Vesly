@@ -31,7 +31,15 @@ export function ConnectButton() {
   // a successful connect that finds zero history is indistinguishable
   // from a silent failure — both leave Transactions/Dividends blank.
   const [syncResult, setSyncResult] = useState<
-    | { ok: true; accounts: number; holdings: number; transactions: number }
+    | {
+        ok: true;
+        accounts: number;
+        holdings: number;
+        transactions: number;
+        raw_activities?: number;
+        skipped_unknown?: number;
+        skipped_labels?: string[];
+      }
     | { ok: false; message: string }
     | null
   >(null);
@@ -119,12 +127,18 @@ export function ConnectButton() {
         accounts: number;
         holdings: number;
         transactions: number;
+        raw_activities?: number;
+        skipped_unknown?: number;
+        skipped_labels?: string[];
       }>("/api/snaptrade/sync", { method: "POST" });
       setSyncResult({
         ok: true,
         accounts: out.accounts ?? 0,
         holdings: out.holdings ?? 0,
         transactions: out.transactions ?? 0,
+        raw_activities: out.raw_activities,
+        skipped_unknown: out.skipped_unknown,
+        skipped_labels: out.skipped_labels,
       });
     } catch (err) {
       console.error("sync failed", err);
@@ -168,10 +182,26 @@ export function ConnectButton() {
             {syncResult.transactions} transaction{syncResult.transactions === 1 ? "" : "s"} pulled.
           </div>
           {syncResult.transactions === 0 && (
-            <div className="mt-1 text-[11px] opacity-80">
-              No transactions came back from your broker for the last 5 years. Some
-              brokerages (Robinhood, certain Vanguard accounts) only expose holdings
-              through SnapTrade — trade history needs an activity CSV in that case.
+            <div className="mt-1 text-[11px] opacity-80 space-y-1">
+              {(syncResult.raw_activities ?? 0) === 0 ? (
+                <div>
+                  SnapTrade returned <strong>0 raw activities</strong> for this connection.
+                  Either there's no trade history in the configured window, or your broker
+                  hasn't shared it yet (some brokers take up to 24h after connect to
+                  expose history). Try Refresh again in a bit, or import an activity CSV
+                  to backfill.
+                </div>
+              ) : (
+                <div>
+                  SnapTrade returned <strong>{syncResult.raw_activities}</strong> activities,
+                  but Beacon's classifier didn't recognise{" "}
+                  <strong>{syncResult.skipped_unknown}</strong> of them. Send these labels
+                  to support so we can map them:{" "}
+                  <code className="text-[10px] bg-fg-primary/10 px-1 rounded">
+                    {(syncResult.skipped_labels ?? []).join(", ") || "—"}
+                  </code>
+                </div>
+              )}
             </div>
           )}
         </div>
