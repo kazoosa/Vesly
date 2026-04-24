@@ -13,19 +13,49 @@
  * until the schema grows a dedicated type for them.
  */
 
-export type ActivityType = "buy" | "sell" | "dividend" | "interest" | "fee" | "transfer";
+export type ActivityType =
+  | "buy"
+  | "sell"
+  | "dividend"
+  | "dividend_reinvested"
+  | "interest"
+  | "fee"
+  | "transfer";
+
+/**
+ * Income-style activity types — used by reporting queries so reinvested
+ * dividends, capital-gain distributions, and return-of-capital all roll
+ * up into the "dividends / income" line the user sees on the Dividends
+ * page, even when they're represented as distinct DB rows. Exported so
+ * the read layer and the importer agree on exactly one definition.
+ */
+export const DIVIDEND_INCOME_TYPES: ActivityType[] = ["dividend", "dividend_reinvested"];
 
 export function classifyActivity(rawLabel: string | null | undefined): ActivityType | null {
   if (!rawLabel) return null;
   const a = String(rawLabel).trim().toUpperCase();
   if (!a) return null;
 
-  // Reinvestment FIRST — DRIP/REI/REINVESTMENT would otherwise match
-  // "INVESTMENT"-less dividend keywords if ordered wrong. Reinvested
-  // dividends create new share lots, so they are modelled as buys for
-  // cost-basis purposes (SnapTrade and Fidelity both model them that
-  // way in their APIs).
-  if (a.includes("REINVEST") || a === "REI" || a === "DRIP") return "buy";
+  // DIVIDEND + REINVEST first (either order): SnapTrade ships
+  // DIVIDEND_REINVESTED, Fidelity ships REINVESTMENT (usually on a
+  // dividend row) — both mean "the broker paid a dividend and
+  // immediately used the cash to buy more shares". We model them as a
+  // distinct type so the share-count replay can add shares (like a
+  // buy) AND the dividend reports can still count them as income.
+  // Previously these were collapsed into "buy" and disappeared from
+  // the user's dividend totals entirely — a real problem for
+  // income-focused investors using DRIP.
+  if (
+    (a.includes("DIVIDEND") && a.includes("REINVEST")) ||
+    a === "DIVIDEND_REINVESTED" ||
+    a === "DIVIDEND_REINVESTMENT" ||
+    a === "DRIP"
+  )
+    return "dividend_reinvested";
+
+  // Non-dividend reinvestments (e.g. interest reinvested into a money
+  // market) still look like buys to the cost-basis replay.
+  if (a.includes("REINVEST") || a === "REI") return "buy";
 
   // Capital gain distributions from mutual funds behave like dividends
   // for reporting purposes. Catch both "CAPITAL GAIN" and the shorter
@@ -33,7 +63,21 @@ export function classifyActivity(rawLabel: string | null | undefined): ActivityT
   if (a.includes("CAPITAL GAIN") || a.includes("CAP GAIN") || a.includes("CAP GN"))
     return "dividend";
 
-  if (a.includes("DIVIDEND") || a === "DIV" || a === "CASH_DIVIDEND" || a === "STOCK_DIVIDEND")
+  // Dividend umbrella — qualified, non-qualified, cash, stock, the
+  // literal label DIV, and the DIS/DISTRIBUTION variants SnapTrade
+  // returns for some European brokers.
+  if (
+    a.includes("DIVIDEND") ||
+    a === "DIV" ||
+    a === "CASH_DIVIDEND" ||
+    a === "STOCK_DIVIDEND" ||
+    a === "QUALIFIED_DIVIDEND" ||
+    a === "NON_QUALIFIED_DIVIDEND" ||
+    a === "DIS" ||
+    a.includes("DISTRIBUTION") ||
+    a.includes("RETURN OF CAPITAL") ||
+    a === "ROC"
+  )
     return "dividend";
 
   if (a.includes("BOUGHT") || a === "BUY" || a === "PURCHASED" || a === "PURCHASE") return "buy";

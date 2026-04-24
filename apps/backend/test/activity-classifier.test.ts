@@ -17,8 +17,16 @@ describe("classifyActivity — Fidelity CSV action strings", () => {
     ["YOU SOLD SHARES OF TSLA", "sell"],
     ["DIVIDEND RECEIVED",       "dividend"],
     ["QUALIFIED DIVIDEND",      "dividend"],
-    ["REINVESTMENT",            "buy"],
-    ["DIVIDEND RECEIVED REINVESTMENT", "buy"],  // reinvest beats dividend
+    // Plain REINVESTMENT (no DIVIDEND keyword) → buy. This covers
+    // things like an interest reinvestment into a money-market fund.
+    ["REINVESTMENT",                   "buy"],
+    // DIVIDEND + REINVEST in the same label → dividend_reinvested, the
+    // distinct type that adds shares (like a buy) AND counts as income
+    // on the Dividends page. Previously this was "buy" alone and
+    // reinvested dividends disappeared from users' dividend totals.
+    ["DIVIDEND RECEIVED REINVESTMENT", "dividend_reinvested"],
+    ["DIVIDEND REINVESTED",            "dividend_reinvested"],
+    ["DIVIDEND_REINVESTED",            "dividend_reinvested"],
     ["INTEREST EARNED",         "interest"],
     ["FEE CHARGED",             "fee"],
     ["CONTRIBUTION",            "transfer"],
@@ -42,10 +50,23 @@ describe("classifyActivity — SnapTrade activity type codes", () => {
     ["DIVIDEND",        "dividend"],
     ["CASH_DIVIDEND",   "dividend"],
     ["STOCK_DIVIDEND",  "dividend"],
-    ["REI",             "buy"],
-    ["REINVEST",        "buy"],
-    ["REINVESTMENT",    "buy"],
-    ["DRIP",            "buy"],
+    ["REI",                   "buy"],
+    ["REINVEST",              "buy"],
+    ["REINVESTMENT",          "buy"],
+    // DRIP by itself means "dividend reinvestment plan" and should be
+    // treated as a reinvested dividend, not a plain buy — that way it
+    // shows up on both the Dividends page (as income) and in the
+    // share-count replay (as shares added).
+    ["DRIP",                  "dividend_reinvested"],
+    ["DIVIDEND_REINVESTED",   "dividend_reinvested"],
+    ["DIVIDEND_REINVESTMENT", "dividend_reinvested"],
+    // SnapTrade's European-broker dividend variants
+    ["DIS",                   "dividend"],
+    ["DISTRIBUTION",          "dividend"],
+    ["QUALIFIED_DIVIDEND",    "dividend"],
+    ["NON_QUALIFIED_DIVIDEND","dividend"],
+    ["RETURN OF CAPITAL",     "dividend"],
+    ["ROC",                   "dividend"],
     ["INTEREST",        "interest"],
     ["FEE",             "fee"],
     ["TAX",             "fee"],

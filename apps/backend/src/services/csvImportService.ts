@@ -1151,13 +1151,17 @@ async function importActivityCsv(
           case "transfer":
             cashFlow += amt;
             break;
+          case "dividend_reinvested":
+            // Net-zero cash: the broker pays a dividend and immediately
+            // uses the cash to buy more shares. Don't touch cashFlow.
+            break;
         }
 
-        // Holdings leg — only buys/sells move share counts. Dividends
-        // and interest stay in cash; reinvested dividends were already
-        // mapped to "buy" by the classifier so they correctly add
-        // shares here too.
-        if ((a.type === "buy" || a.type === "sell") && a.ticker && qty > 0) {
+        // Holdings leg — BUY and DIVIDEND_REINVESTED both add shares,
+        // SELL subtracts. Plain DIVIDEND / INTEREST stay in cash only.
+        const addsShares = a.type === "buy" || a.type === "dividend_reinvested";
+        const removesShares = a.type === "sell";
+        if ((addsShares || removesShares) && a.ticker && qty > 0) {
           const key = a.ticker.toUpperCase();
           const pos = positionsByTicker.get(key) ?? {
             ticker: a.ticker,
@@ -1166,7 +1170,7 @@ async function importActivityCsv(
             costBasis: 0,
             lastPrice: px,
           };
-          if (a.type === "buy") {
+          if (addsShares) {
             pos.quantity += qty;
             pos.costBasis += amt + fees; // amt already absolute
           } else {

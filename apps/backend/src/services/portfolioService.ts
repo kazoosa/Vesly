@@ -94,7 +94,7 @@ export async function getPortfolioSummary(developerId: string) {
     _sum: { amount: true },
     where: {
       accountId: { in: accIds },
-      type: "dividend",
+      type: { in: ["dividend", "dividend_reinvested"] },
       date: { gte: ytdStart },
     },
   });
@@ -264,7 +264,16 @@ export async function getPortfolioTransactions(
   const accountMap = new Map(accounts.map((a: typeof accounts[number]) => [a.id, a]));
 
   const where: Record<string, unknown> = { accountId: { in: accIds } };
-  if (opts.type) where.type = opts.type;
+  if (opts.type) {
+    // "dividend" in the filter UI should also match reinvested-dividend
+    // rows — users think of DRIP as "a dividend I reinvested", not as
+    // a separate buy, so filter parity with the Dividends page.
+    if (opts.type === "dividend") {
+      where.type = { in: ["dividend", "dividend_reinvested"] };
+    } else {
+      where.type = opts.type;
+    }
+  }
 
   const [rows, total] = await Promise.all([
     prisma.investmentTransaction.findMany({
@@ -313,8 +322,15 @@ export async function getPortfolioDividends(developerId: string) {
   });
   const accIds = accounts.map((a: { id: string }) => a.id);
 
+  // Include reinvested dividends alongside cash dividends. Some brokers
+  // (SnapTrade/DRIP, Fidelity's REINVESTMENT line) represent them as a
+  // distinct type so the share-count replay can add shares like a buy,
+  // but the user still wants to see that income on the Dividends page.
   const rows = await prisma.investmentTransaction.findMany({
-    where: { accountId: { in: accIds }, type: "dividend" },
+    where: {
+      accountId: { in: accIds },
+      type: { in: ["dividend", "dividend_reinvested"] },
+    },
     include: { security: true },
     orderBy: { date: "asc" },
   });
@@ -756,7 +772,9 @@ export async function getPortfolioBySymbol(developerId: string, rawSymbol: strin
 
   // --------- Dividends --------------------------------------------------
 
-  const divTxns = txns.filter((t) => t.type === "dividend");
+  const divTxns = txns.filter(
+    (t) => t.type === "dividend" || t.type === "dividend_reinvested",
+  );
   const divYtd = divTxns
     .filter((t) => t.date >= ytdStart)
     .reduce((s, t) => s + t.amount, 0);
@@ -813,9 +831,11 @@ export async function getPortfolioBySymbol(developerId: string, rawSymbol: strin
       id: t.id,
       date: t.date.toISOString(),
       type:
-        t.type === "buy" || t.type === "sell" || t.type === "dividend"
+        t.type === "buy" || t.type === "sell"
           ? t.type
-          : "other",
+          : t.type === "dividend" || t.type === "dividend_reinvested"
+            ? "dividend"
+            : "other",
       shares: +t.quantity.toFixed(4),
       pricePerShare: +t.price.toFixed(4),
       amount: +t.amount.toFixed(2),

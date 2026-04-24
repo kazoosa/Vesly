@@ -23,8 +23,9 @@ const FIDELITY_ACTIVITY_FIXTURE = [
   '03/15/2025,X12345,YOU SOLD,AAPL,APPLE INC,5,$170.00,$0.00,$0.00,$850.00,03/17/2025',
   // Dividend (cash only — does NOT change shares)
   '04/01/2025,X12345,DIVIDEND RECEIVED,AAPL,APPLE INC,0,$0.00,$0.00,$0.00,$25.00,04/01/2025',
-  // Reinvested dividend (classifier maps to "buy" so DOES add shares)
-  '04/01/2025,X12345,REINVESTMENT,AAPL,APPLE INC,1,$170.00,$0.00,$0.00,-$170.00,04/01/2025',
+  // Reinvested dividend (classifier maps to "dividend_reinvested" —
+  // adds shares AND counts as dividend income)
+  '04/01/2025,X12345,DIVIDEND RECEIVED REINVESTMENT,AAPL,APPLE INC,1,$170.00,$0.00,$0.00,-$170.00,04/01/2025',
   // Fee (subtract from cash, no share change)
   '04/15/2025,X12345,ACCOUNT FEE,,FEE,,,,$1.00,-$1.00,04/15/2025',
   // Different ticker — buy and full sell, ends with zero shares
@@ -37,10 +38,13 @@ describe("Fidelity activity → derived holdings (parse + classify pipeline)", (
 
   it("classifies every action so the replay sees the right type", () => {
     const types = activities.map((a) => a.type).sort();
-    // Two buys + one reinvestment (mapped to buy) + one buy MSFT = 4 buys
-    expect(types.filter((t) => t === "buy")).toHaveLength(4);
+    // Two AAPL buys + one MSFT buy = 3 plain buys
+    expect(types.filter((t) => t === "buy")).toHaveLength(3);
     expect(types.filter((t) => t === "sell")).toHaveLength(2);
     expect(types.filter((t) => t === "dividend")).toHaveLength(1);
+    // The reinvested dividend is its own type — the replay adds shares
+    // AND the Dividends page counts it as income.
+    expect(types.filter((t) => t === "dividend_reinvested")).toHaveLength(1);
     expect(types.filter((t) => t === "fee")).toHaveLength(1);
   });
 
