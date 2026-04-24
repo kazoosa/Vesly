@@ -900,8 +900,17 @@ async function importPositionsCsv(
 
       for (const pos of merged.values()) {
         const security = await upsertSecurityWithTx(tx, pos);
-        await tx.investmentHolding.create({
-          data: {
+        // Use upsert keyed on the (accountId, securityId) unique so the
+        // import stays idempotent even if a previous disconnect didn't
+        // cascade cleanly — without this, leftover holdings from a stale
+        // account (or a Prisma migration that didn't apply onDelete:
+        // Cascade in prod) trigger the misleading "duplicate rows for
+        // accountId, securityId" error and lock the user out of import.
+        await tx.investmentHolding.upsert({
+          where: {
+            accountId_securityId: { accountId: account.id, securityId: security.id },
+          },
+          create: {
             accountId: account.id,
             securityId: security.id,
             quantity: pos.quantity,
@@ -910,6 +919,13 @@ async function importPositionsCsv(
             institutionValue: pos.quantity * pos.price,
             costBasis: (pos.avgCost ?? pos.price) * pos.quantity,
             isoCurrencyCode: "USD",
+          },
+          update: {
+            quantity: pos.quantity,
+            institutionPrice: pos.price,
+            institutionPriceAsOf: new Date(),
+            institutionValue: pos.quantity * pos.price,
+            costBasis: (pos.avgCost ?? pos.price) * pos.quantity,
           },
         });
         holdingsCreated++;
@@ -972,6 +988,20 @@ async function importActivityCsv(
       const first = bucket[0]!;
       const mask = (first.accountNumber || "").slice(-4) || "0000";
 
+      // Compute a running cash-flow estimate from the activities. Without
+      // this, activity-only accounts (no prior positions import) had
+      // currentBalance hardcoded to 0 and every Net Worth / per-account
+      // value rendered as $0.00. For mixed accounts (positions + activity)
+      // we keep the higher of the existing balance and the cash-flow
+      // estimate so a positions snapshot's mark-to-market value isn't
+      // overwritten by a partial activity history.
+      const cashFlow = bucket.reduce((sum, a) => {
+        const amt = Number(a.amount) || 0;
+        if (a.type === "buy" || a.type === "fee") return sum - amt;
+        // sell, dividend, interest, transfer all flow money in.
+        return sum + amt;
+      }, 0);
+
       // Find an existing CSV-sourced account with the same mask under
       // this item, else create one. Activity imports attach to prior
       // positions accounts when possible so holdings + transactions
@@ -983,17 +1013,26 @@ async function importActivityCsv(
         account = await tx.account.create({
           data: {
             itemId,
-            name: first.accountName || "Fidelity Account",
+            name: first.accountName || `${BROKER_LABELS[broker]} Account`,
             officialName: BROKER_LABELS[broker],
             mask,
             type: "investment",
             subtype: "brokerage",
-            currentBalance: 0,
-            availableBalance: 0,
+            currentBalance: cashFlow,
+            availableBalance: cashFlow,
             isoCurrencyCode: "USD",
           },
         });
         accountsTouched++;
+      } else {
+        // Mixed account: bump balance if cash-flow estimate exceeds the
+        // current snapshot. Never lower a real positions-derived balance.
+        if (cashFlow > Number(account.currentBalance ?? 0)) {
+          account = await tx.account.update({
+            where: { id: account.id },
+            data: { currentBalance: cashFlow, availableBalance: cashFlow },
+          });
+        }
       }
 
       for (let i = 0; i < bucket.length; i++) {
