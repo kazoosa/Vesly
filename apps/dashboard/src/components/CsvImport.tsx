@@ -195,8 +195,8 @@ export function CsvImport() {
       </div>
 
       {lastImport && (
-        <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start justify-between gap-3">
-          <div className="text-xs text-emerald-300">
+        <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start justify-between gap-3 flex-wrap">
+          <div className="text-xs text-emerald-300 min-w-0">
             <div className="font-semibold uppercase tracking-widest text-[10px] mb-0.5">
               Import complete
             </div>
@@ -225,14 +225,27 @@ export function CsvImport() {
               )}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setLastImport(null)}
-            className="text-emerald-300/70 hover:text-emerald-200 text-xs"
-            aria-label="Dismiss"
-          >
-            ×
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                clearStagingArea();
+                setLastImport(null);
+                fileRef.current?.click();
+              }}
+              className="btn-primary text-xs"
+            >
+              + Add another CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => setLastImport(null)}
+              className="text-emerald-300/70 hover:text-emerald-200 text-xs px-2"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
         </div>
       )}
 
