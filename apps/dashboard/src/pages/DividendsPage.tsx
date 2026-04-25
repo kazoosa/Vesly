@@ -126,9 +126,11 @@ export function DividendsPage() {
           {q.data.by_ticker.slice(0, 15).map((t) => {
             const pct = (t.total / q.data.by_ticker[0]!.total) * 100;
             return (
-              <div
+              <Link
                 key={t.ticker_symbol}
-                className="flex items-center gap-3 py-2 border-b border-border-subtle/50 last:border-0"
+                to={`${to("stocks")}?symbol=${encodeURIComponent(t.ticker_symbol)}`}
+                title={`Open ${t.ticker_symbol} details`}
+                className="flex items-center gap-3 py-2 border-b border-border-subtle/50 last:border-0 -mx-2 px-2 rounded-md hover:bg-bg-hover/60 transition-colors"
               >
                 <div className="w-14 font-num text-sm text-fg-primary">{t.ticker_symbol}</div>
                 <div className="flex-1 text-xs text-fg-secondary truncate">{t.name}</div>
@@ -144,7 +146,7 @@ export function DividendsPage() {
                 <div className="w-24 text-right font-num text-sm text-fg-primary">
                   {fmtUsd(t.total)}
                 </div>
-              </div>
+              </Link>
             );
           })}
           {q.data.by_ticker.length === 0 && (
