@@ -150,15 +150,16 @@ export function OptionsPage() {
         <div className="card p-10 text-center">
           <h2 className="text-fg-primary mb-2">No option positions</h2>
           <p className="text-sm text-fg-secondary max-w-md mx-auto mb-2">
-            Beacon picks up option contracts from your Fidelity, Schwab, IBKR,
-            and SnapTrade-connected brokerages automatically. Nothing to show
-            yet — connect an options-enabled brokerage or import a positions
-            CSV that includes contracts.
+            Beacon picks up option contracts from your connected brokerages
+            automatically when SnapTrade exposes them. Nothing to show yet.
           </p>
           <p className="text-xs text-fg-fainter max-w-md mx-auto mb-5">
-            Coverage note: SnapTrade exposes options for some brokers but not
-            others (Robinhood does, Vanguard mostly doesn't). For unsupported
-            brokers, the CSV import path picks them up.
+            Coverage caveat: SnapTrade's options data depends on what each
+            broker shares. Some brokers (notably Robinhood) currently don't
+            expose options holdings via the SnapTrade API even though the
+            account itself connects fine — your stocks, dividends and trades
+            will still sync. If your broker isn't surfacing options, import
+            a positions CSV that includes the contracts to backfill.
           </p>
           <Link to={to("accounts")} className="btn-primary text-xs inline-flex">
             Connect a brokerage
