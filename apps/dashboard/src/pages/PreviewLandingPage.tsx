@@ -968,7 +968,7 @@ function Footer() {
           <a href="#pricing"   className="hover:text-[var(--stripe-ink)] transition-colors">Pricing</a>
           <a href="#faq"       className="hover:text-[var(--stripe-ink)] transition-colors">FAQ</a>
           <a
-            href="https://beacon-three-liard.vercel.app/"
+            href="https://stats.uptimerobot.com/yo9bjqio7P"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 hover:text-[var(--stripe-ink)] transition-colors"
