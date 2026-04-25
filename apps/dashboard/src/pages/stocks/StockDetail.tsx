@@ -10,6 +10,7 @@ import {
   Cell,
   Pie,
   PieChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -88,7 +89,12 @@ export function StockDetail({
         refreshing={refreshing}
       />
       {optionPayload && <OptionContractCard option={optionPayload} />}
-      <HistoryChart history={market.history} range={range} onRangeChange={onRangeChange} />
+      <HistoryChart
+        history={market.history}
+        range={range}
+        onRangeChange={onRangeChange}
+        activity={position.data?.activity ?? []}
+      />
       <TopRow position={position} quote={market.quote} />
       <PLPerformanceSection position={position} />
       <PortfolioInfoRow position={position} quote={market.quote} />
@@ -390,10 +396,12 @@ function HistoryChart({
   history,
   range,
   onRangeChange,
+  activity,
 }: {
   history: UseQueryResult<StockHistory>;
   range: HistoryRange;
   onRangeChange: (r: HistoryRange) => void;
+  activity: ActivityItem[];
 }) {
   const ct = useChartTheme();
   const data = useMemo(() => {
@@ -402,6 +410,35 @@ function HistoryChart({
       .filter((c) => c.close != null)
       .map((c) => ({ t: c.time, close: c.close as number }));
   }, [history.data]);
+
+  // Map each activity row to the closest candle in the visible window.
+  // Activity dates are YYYY-MM-DD strings, candle.time is ISO. Match by
+  // calendar day; for intraday ranges (1d/5d) prefer the latest candle of
+  // that day so the marker sits on the close-of-day price the user
+  // recognises. Activities outside the visible range are dropped — that
+  // way switching the range filter the markers in/out for free.
+  const markers = useMemo(() => {
+    if (data.length === 0 || activity.length === 0) return [];
+    const byDay = new Map<string, { t: string; close: number }>();
+    for (const d of data) {
+      const day = d.t.slice(0, 10);
+      // Keep the LAST candle for each day = close-of-day price.
+      byDay.set(day, d);
+    }
+    const dayKeys = [...byDay.keys()].sort();
+    return activity
+      .map((a) => {
+        const exact = byDay.get(a.date);
+        if (exact) return { ...activityMarker(a, exact.t, exact.close) };
+        // No candle on that exact day (weekend / holiday). Use the next
+        // trading day forward so the marker doesn't disappear.
+        const next = dayKeys.find((d) => d >= a.date);
+        if (!next) return null;
+        const candle = byDay.get(next)!;
+        return activityMarker(a, candle.t, candle.close);
+      })
+      .filter((m): m is NonNullable<typeof m> => m !== null);
+  }, [data, activity]);
 
   const first = data[0]?.close ?? 0;
   const last = data[data.length - 1]?.close ?? 0;
@@ -502,12 +539,81 @@ function HistoryChart({
                 fill="url(#priceFill)"
                 isAnimationActive={false}
               />
+              {markers.map((m, i) => (
+                <ReferenceDot
+                  // x must match the AreaChart's dataKey ("t") format
+                  // exactly. Recharts won't snap a non-matching x to
+                  // the nearest point — it just won't render.
+                  key={`marker-${i}`}
+                  x={m.x}
+                  y={m.y}
+                  r={6}
+                  fill={m.fill}
+                  stroke={ct.tooltipBg}
+                  strokeWidth={1.5}
+                  isFront
+                  // A custom label inside the dot — single character so
+                  // it renders cleanly at small radius.
+                  label={{
+                    value: m.label,
+                    fill: "#fff",
+                    fontSize: 9,
+                    fontWeight: 700,
+                  }}
+                  ifOverflow="extendDomain"
+                />
+              ))}
             </AreaChart>
           </ResponsiveContainer>
         )}
       </div>
+      {markers.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-fg-muted">
+          <LegendDot color="#10b981" label="B Buy" />
+          <LegendDot color="#ef4444" label="S Sell" />
+          <LegendDot color="#f59e0b" label="D Dividend" />
+          <LegendDot color="#8b5cf6" label="O Option" />
+          <span className="opacity-70">{markers.length} marker{markers.length === 1 ? "" : "s"} in range</span>
+        </div>
+      )}
     </div>
   );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className="inline-block w-2.5 h-2.5 rounded-full"
+        style={{ backgroundColor: color }}
+        aria-hidden
+      />
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Map an ActivityItem to a chart-marker descriptor.
+ * Buy = green, Sell = red, Dividend = amber, anything else = purple
+ * (option lifecycle, transfer, fee). One letter on the dot for a
+ * glance read.
+ */
+function activityMarker(
+  a: ActivityItem,
+  x: string,
+  y: number,
+): { x: string; y: number; fill: string; label: string } {
+  switch (a.type) {
+    case "buy":
+      return { x, y, fill: "#10b981", label: "B" };
+    case "sell":
+      return { x, y, fill: "#ef4444", label: "S" };
+    case "dividend":
+      return { x, y, fill: "#f59e0b", label: "D" };
+    default:
+      return { x, y, fill: "#8b5cf6", label: "O" };
+  }
 }
 
 /* ----------------------------------------------------------- Top row */
