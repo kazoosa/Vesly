@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { SnapTradeReact } from "snaptrade-react";
 import { useAuth } from "../lib/auth";
@@ -27,6 +27,7 @@ export function ConnectButton() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [snapLoginLink, setSnapLoginLink] = useState<string | null>(null);
+  const syncFiredRef = useRef(false);
   // Surface what the post-connect sync actually pulled. Without this,
   // a successful connect that finds zero history is indistinguishable
   // from a silent failure — both leave Transactions/Dividends blank.
@@ -302,6 +303,7 @@ export function ConnectButton() {
         close={() => setSnapLoginLink(null)}
         onSuccess={(id: unknown) => {
           console.log("SnapTrade connected:", id);
+          syncFiredRef.current = true;
           afterSnapTradeConnect();
           setSnapLoginLink(null);
         }}
@@ -311,9 +313,13 @@ export function ConnectButton() {
           setSnapLoginLink(null);
         }}
         onExit={() => {
-          // User closed without connecting. Still run a sync in case they
-          // added an account — no-op if not.
-          afterSnapTradeConnect();
+          // SnapTradeReact fires both onSuccess and onExit on a successful
+          // connect. Without the ref guard we'd kick off two parallel
+          // /sync calls (~25s each) on every connect.
+          if (!syncFiredRef.current) {
+            afterSnapTradeConnect();
+          }
+          syncFiredRef.current = false;
           setSnapLoginLink(null);
         }}
       />
