@@ -88,34 +88,136 @@ export async function createConnectionPortalUrl(
  * Pulls all connections + accounts + positions + orders for a developer
  * and upserts into our existing Prisma tables. Safe to call multiple times.
  */
-export async function syncDeveloper(developer: Developer): Promise<{
+/**
+ * Per-call result wrapper. Every SnapTrade SDK invocation flows
+ * through `safeCall` so a failure in one endpoint can never silently
+ * break the others. The Render log line for a failure includes:
+ *   - the SDK method name we tried (so the log is greppable)
+ *   - the params we sent (with the userSecret redacted; we never want
+ *     to leak it via logs)
+ *   - the HTTP status, response body, and message from SnapTrade
+ *   - the developer/account context (so an issue can be triaged
+ *     across users)
+ */
+type SafeOk<T> = { ok: true; data: T };
+type SafeErr = { ok: false; error: string; status?: number };
+type Safe<T> = SafeOk<T> | SafeErr;
+
+async function safeCall<T>(
+  label: string,
+  context: Record<string, unknown>,
+  fn: () => Promise<T>,
+): Promise<Safe<T>> {
+  try {
+    const data = await fn();
+    return { ok: true, data };
+  } catch (err) {
+    // SnapTrade SDK throws AxiosError-shaped errors. Pull the useful
+    // bits out so the log line is greppable.
+    const e = err as {
+      message?: string;
+      response?: { status?: number; data?: unknown };
+      config?: { url?: string; method?: string };
+    };
+    const status = e.response?.status;
+    // Redact userSecret from the context before logging — it's a long-
+    // lived credential and must never appear in logs.
+    const safeContext = { ...context };
+    if (typeof safeContext.userSecret === "string") {
+      safeContext.userSecret = "[redacted]";
+    }
+    logger.error(
+      {
+        snaptradeCall: label,
+        status,
+        message: e.message,
+        responseBody: e.response?.data,
+        url: e.config?.url,
+        method: e.config?.method,
+        ...safeContext,
+      },
+      `snaptrade: ${label} failed`,
+    );
+    return {
+      ok: false,
+      error: e.message ?? "SnapTrade request failed",
+      status,
+    };
+  }
+}
+
+/**
+ * The result shape every sync returns to the caller. `errors` contains
+ * one entry per failed sub-step ("activities for account X failed: rate
+ * limited") so the dashboard banner can show the user exactly which
+ * data type didn't make it instead of a generic "Sync failed".
+ */
+export interface SyncResult {
   connections: number;
   accounts: number;
   holdings: number;
   transactions: number;
+  options_fetched: number;
   raw_activities: number;
   skipped_unknown: number;
   skipped_labels: string[];
-}> {
+  /** Per-step error summaries for the user-facing banner. */
+  errors: Array<{
+    step: string;
+    accountId?: string;
+    message: string;
+    status?: number;
+  }>;
+  /** Aggregated success — true iff every step succeeded for every account. */
+  fully_succeeded: boolean;
+}
+
+export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
   const st = client();
   const { userId, userSecret } = await ensureSnapTradeUser(developer);
 
   // Each developer gets an implicit internal "application" to own their items.
   const application = await ensureInternalApplication(developer);
 
-  const connRes = await st.connections.listBrokerageAuthorizations({ userId, userSecret });
-  const connections = (connRes.data as unknown as Array<Record<string, unknown>>) ?? [];
+  // The very first SnapTrade call. If THIS fails the user has no
+  // connections and there's nothing to sync; return a clean error
+  // rather than throwing so the route handler doesn't 500.
+  const connectionsRes = await safeCall(
+    "connections.listBrokerageAuthorizations",
+    { developerId: developer.id, userSecret },
+    () => st.connections.listBrokerageAuthorizations({ userId, userSecret }),
+  );
 
+  const errors: SyncResult["errors"] = [];
   let accountsCount = 0;
   let holdingsCount = 0;
   let txCount = 0;
-  // Tracking the raw counts SnapTrade returns vs what we wrote, so the
-  // sync result can tell the user "SnapTrade returned 247 activities but
-  // 247 were unrecognised types" vs "SnapTrade returned 0" — those two
-  // failure modes need different fixes.
+  let optionsFetched = 0;
   let rawActivitiesFetched = 0;
   let skippedUnknownTotal = 0;
   const skippedUnknownLabels = new Set<string>();
+
+  if (!connectionsRes.ok) {
+    errors.push({
+      step: "list_connections",
+      message: connectionsRes.error,
+      status: connectionsRes.status,
+    });
+    return {
+      connections: 0,
+      accounts: 0,
+      holdings: 0,
+      transactions: 0,
+      options_fetched: 0,
+      raw_activities: 0,
+      skipped_unknown: 0,
+      skipped_labels: [],
+      errors,
+      fully_succeeded: false,
+    };
+  }
+
+  const connections = (connectionsRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
 
   for (const conn of connections) {
     const connId = String(conn.id);
@@ -154,15 +256,30 @@ export async function syncDeveloper(developer: Developer): Promise<{
       },
     });
 
-    // Accounts under this connection
-    const accRes = await st.accountInformation.listUserAccounts({ userId, userSecret });
-    const allAccounts = (accRes.data as unknown as Array<Record<string, unknown>>) ?? [];
+    // Accounts under this connection. Wrapped — listing accounts can
+    // 403 when a brokerage authorization expired; the user expects the
+    // banner to say "auth expired" not "Sync failed".
+    const listAccountsRes = await safeCall(
+      "accountInformation.listUserAccounts",
+      { developerId: developer.id, connectionId: connId, userSecret },
+      () => st.accountInformation.listUserAccounts({ userId, userSecret }),
+    );
+    if (!listAccountsRes.ok) {
+      errors.push({
+        step: "list_accounts",
+        accountId: connId,
+        message: listAccountsRes.error,
+        status: listAccountsRes.status,
+      });
+      // No accounts to iterate; move on to the next connection.
+      continue;
+    }
+    const allAccounts = (listAccountsRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
     const accountsForConn = allAccounts.filter(
       (a) => String(a.brokerage_authorization) === connId,
     );
 
     for (const acc of accountsForConn) {
-      try {
       const accId = String(acc.id);
       const balance = (acc.balance as { total?: { amount?: number } } | undefined)?.total?.amount ?? 0;
       const accountName = String(acc.name ?? "Brokerage Account");
@@ -170,6 +287,10 @@ export async function syncDeveloper(developer: Developer): Promise<{
         acc.number ?? "0000",
       ).slice(-4);
 
+      // The account upsert is local DB only; if it throws something is
+      // very wrong (Postgres down, schema drift) — let it bubble so
+      // the route handler 500s and we notice. The PER-API-CALL failures
+      // below are the ones we isolate.
       const account = await prisma.account.upsert({
         where: { snaptradeAccountId: accId },
         update: {
@@ -193,16 +314,42 @@ export async function syncDeveloper(developer: Developer): Promise<{
       });
       accountsCount++;
 
-      // --- Positions ---
-      const posRes = await st.accountInformation.getUserAccountPositions({
-        userId,
-        userSecret,
-        accountId: accId,
-      });
-      const positions = (posRes.data as unknown as Array<Record<string, unknown>>) ?? [];
+      // --- Equity / mixed positions ---
+      // Wrapped: a single broker returning 500 on positions for one
+      // account must not stop us from pulling activities + options for
+      // that same account, OR positions for the next account.
+      const posCallRes = await safeCall(
+        "accountInformation.getUserAccountPositions",
+        { developerId: developer.id, accountId: accId, userSecret },
+        () =>
+          st.accountInformation.getUserAccountPositions({
+            userId,
+            userSecret,
+            accountId: accId,
+          }),
+      );
 
-      // Remove stale holdings — simplest approach: wipe + recreate per sync
-      await prisma.investmentHolding.deleteMany({ where: { accountId: account.id } });
+      let positions: Array<Record<string, unknown>> = [];
+      if (posCallRes.ok) {
+        positions = (posCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
+      } else {
+        errors.push({
+          step: "positions",
+          accountId: accId,
+          message: posCallRes.error,
+          status: posCallRes.status,
+        });
+        // Fall through with positions=[] — we DON'T early-return so
+        // the activity + options sub-fetches still get a chance.
+      }
+
+      // Remove stale holdings — simplest approach: wipe + recreate per sync.
+      // Only wipe when we actually got a successful positions response;
+      // otherwise we'd wipe the user's existing holdings AND replace
+      // them with nothing.
+      if (posCallRes.ok) {
+        await prisma.investmentHolding.deleteMany({ where: { accountId: account.id } });
+      }
 
       let holdingsSkipped = 0;
       for (const pos of positions) {
@@ -288,6 +435,118 @@ export async function syncDeveloper(developer: Developer): Promise<{
         );
       }
 
+      // --- Dedicated options endpoint ---
+      // SnapTrade exposes options via TWO different endpoints depending
+      // on the broker:
+      //   1. listOptionHoldings (the dedicated options API) — used by
+      //      Robinhood, Schwab, and others
+      //   2. getUserAccountPositions (the unified positions API) — used
+      //      by Fidelity and a few others; option rows come back inline
+      //      alongside equities
+      // We were only calling #2. Brokers that use #1 returned zero
+      // option holdings, which is exactly the user's report.
+      // Now we call BOTH and let the (accountId, securityId) upsert
+      // dedup any contracts that show up in both (rare, but cheap).
+      const optsCallRes = await safeCall(
+        "options.listOptionHoldings",
+        { developerId: developer.id, accountId: accId, userSecret },
+        () =>
+          st.options.listOptionHoldings({
+            userId,
+            userSecret,
+            accountId: accId,
+          }),
+      );
+      let optionPositions: Array<Record<string, unknown>> = [];
+      if (optsCallRes.ok) {
+        optionPositions =
+          (optsCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
+        optionsFetched += optionPositions.length;
+        logger.info(
+          { accountId: accId, optionsCount: optionPositions.length },
+          "snaptrade options holdings fetched",
+        );
+      } else {
+        // Don't add to errors[] when the broker simply doesn't have
+        // an options offering (404). Anything else (500, 401, etc) is
+        // a real failure worth surfacing.
+        if (optsCallRes.status !== 404) {
+          errors.push({
+            step: "options",
+            accountId: accId,
+            message: optsCallRes.error,
+            status: optsCallRes.status,
+          });
+        }
+      }
+
+      // Persist options. extractPositionSymbol handles every shape
+      // SnapTrade returns including the dedicated-options-endpoint
+      // payload (option_symbol is an OptionsSymbol object with
+      // ticker/option_type/strike_price/expiration_date/is_mini_option).
+      for (const pos of optionPositions) {
+        let extracted;
+        try {
+          extracted = extractPositionSymbol(pos);
+        } catch (err) {
+          // Defensive — extract* functions don't currently throw, but a
+          // future change might. A single bad row must NOT kill the
+          // options loop for this account.
+          logger.warn(
+            { err, accountId: accId, posKeys: Object.keys(pos) },
+            "snaptrade options: extract failed; skipping",
+          );
+          continue;
+        }
+        const { ticker, description, typeDesc, embeddedPrice, embeddedUnits, embeddedAvg, option } =
+          extracted;
+        if (!ticker) {
+          logger.warn(
+            { accountId: accId, posKeys: Object.keys(pos) },
+            "snaptrade options: could not extract ticker; skipping",
+          );
+          continue;
+        }
+        const quantity = Number(pos.units ?? embeddedUnits ?? 0);
+        const price = Number(pos.price ?? embeddedPrice ?? 0);
+        const avgCost = Number(pos.average_purchase_price ?? embeddedAvg ?? price);
+        const mult = option?.multiplier ?? 100; // options endpoint => always option => default 100
+        const value = quantity * price * mult;
+        const costBasis = quantity * avgCost * mult;
+
+        try {
+          const security = await upsertSecurity(ticker, description, price, typeDesc, option);
+          await prisma.investmentHolding.upsert({
+            where: {
+              accountId_securityId: { accountId: account.id, securityId: security.id },
+            },
+            create: {
+              accountId: account.id,
+              securityId: security.id,
+              quantity,
+              institutionPrice: price,
+              institutionPriceAsOf: new Date(),
+              institutionValue: value,
+              costBasis,
+              isoCurrencyCode: "USD",
+            },
+            update: {
+              quantity,
+              institutionPrice: price,
+              institutionPriceAsOf: new Date(),
+              institutionValue: value,
+              costBasis,
+            },
+          });
+          holdingsCount++;
+        } catch (err) {
+          logger.warn(
+            { err, accountId: accId, ticker },
+            "snaptrade: failed to upsert option holding; continuing",
+          );
+        }
+      }
+
       // --- Orders / activities ---
       // SnapTrade's getActivities defaults to a short rolling window when
       // no dates are passed, which drops most historical dividends and
@@ -308,13 +567,32 @@ export async function syncDeveloper(developer: Developer): Promise<{
       const today = new Date();
       const startDate = new Date(today);
       startDate.setFullYear(today.getFullYear() - years);
-      const actRes = await st.transactionsAndReporting.getActivities({
-        userId,
-        userSecret,
-        startDate: startDate.toISOString().slice(0, 10),
-        endDate: today.toISOString().slice(0, 10),
-      });
-      const allActivities = (actRes.data as unknown as Array<Record<string, unknown>>) ?? [];
+      const actCallRes = await safeCall(
+        "transactionsAndReporting.getActivities",
+        { developerId: developer.id, accountId: accId, userSecret, startDate, endDate: today },
+        () =>
+          st.transactionsAndReporting.getActivities({
+            userId,
+            userSecret,
+            startDate: startDate.toISOString().slice(0, 10),
+            endDate: today.toISOString().slice(0, 10),
+          }),
+      );
+
+      if (!actCallRes.ok) {
+        errors.push({
+          step: "activities",
+          accountId: accId,
+          message: actCallRes.error,
+          status: actCallRes.status,
+        });
+        // Move to the next account — positions/options for THIS account
+        // already wrote, and the next account's data is independent.
+        continue;
+      }
+
+      const allActivities =
+        (actCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
       // Client-side filter to this account, since we dropped the server filter.
       const activities = allActivities.filter((a) => {
         const acctRef = a.account as { id?: string } | string | undefined;
@@ -329,47 +607,53 @@ export async function syncDeveloper(developer: Developer): Promise<{
 
       let skippedUnknown = 0;
       for (const act of activities) {
-        const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
-        const mapped = mapActivityType(rawType);
-        if (!mapped) {
-          // Don't silently drop — log the raw label so ops can see what
-          // the classifier is missing and we can extend coverage.
-          skippedUnknown++;
-          skippedUnknownTotal++;
-          if (rawType) {
-            skippedUnknownLabels.add(rawType);
-            logger.warn({ rawType, accountId: accId }, "snaptrade: unrecognised activity type");
-          }
-          continue;
-        }
-
-        const { ticker, description } = extractSnapTradeSymbol(act);
-        const price = safeNumber(act.price);
-        const units = safeNumber(act.units);
-        const amount = Math.abs(safeNumber(act.amount, price * units));
-        const fees = Math.abs(safeNumber(act.fee));
-
-        // Prefer trade_date; fall back to settlement_date; last resort
-        // is `new Date()` so we never fail outright (a misdated row is
-        // better than losing the row entirely — operator can reconcile).
-        const date = parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
-        const tradeDateKey = date.toISOString().slice(0, 10);
-
-        // Option detection on activity rows so a BUY/SELL on an option
-        // contract creates the OptionContract row alongside the Security
-        // — same path the position-sync uses. parseOptionSymbol returns
-        // null for plain equity tickers, no-op for those.
-        const actOption = parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
-        const security = await upsertSecurity(ticker, description, price, undefined, actOption);
-
-        // Use SnapTrade's id when present; fall back to a deterministic
-        // composite so we never silently drop rows and re-syncs remain
-        // idempotent via the unique snaptradeOrderId constraint.
-        const rawId = String(act.id ?? "").trim();
-        const orderId = rawId
-          || `snaptrade_${accId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
-
+        // Wrap the entire per-row processing so a single malformed
+        // activity (unexpected currency shape, weird symbol nesting,
+        // etc.) can never abort the rest of the rows for this account.
         try {
+          const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
+          const mapped = mapActivityType(rawType);
+          if (!mapped) {
+            // Don't silently drop — log the raw label so ops can see what
+            // the classifier is missing and we can extend coverage.
+            skippedUnknown++;
+            skippedUnknownTotal++;
+            if (rawType) {
+              skippedUnknownLabels.add(rawType);
+              logger.warn({ rawType, accountId: accId }, "snaptrade: unrecognised activity type");
+            }
+            continue;
+          }
+
+          const { ticker, description } = extractSnapTradeSymbol(act);
+          const price = safeNumber(act.price);
+          const units = safeNumber(act.units);
+          const amount = Math.abs(safeNumber(act.amount, price * units));
+          const fees = Math.abs(safeNumber(act.fee));
+
+          // Prefer trade_date; fall back to settlement_date; last resort
+          // is `new Date()` so we never fail outright (a misdated row is
+          // better than losing the row entirely — operator can reconcile).
+          const date =
+            parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
+          const tradeDateKey = date.toISOString().slice(0, 10);
+
+          // Option detection on activity rows so a BUY/SELL on an option
+          // contract creates the OptionContract row alongside the Security
+          // — same path the position-sync uses. parseOptionSymbol returns
+          // null for plain equity tickers, no-op for those.
+          const actOption =
+            parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
+          const security = await upsertSecurity(ticker, description, price, undefined, actOption);
+
+          // Use SnapTrade's id when present; fall back to a deterministic
+          // composite so we never silently drop rows and re-syncs remain
+          // idempotent via the unique snaptradeOrderId constraint.
+          const rawId = String(act.id ?? "").trim();
+          const orderId =
+            rawId ||
+            `snaptrade_${accId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
+
           await prisma.investmentTransaction.upsert({
             where: { snaptradeOrderId: orderId },
             update: {},
@@ -389,24 +673,18 @@ export async function syncDeveloper(developer: Developer): Promise<{
           });
           txCount++;
         } catch (err) {
-          logger.warn({ err, orderId }, "failed to upsert activity");
+          // Per-row failure: log with the raw activity so we can
+          // reproduce + extend the parser. Continue with the next row.
+          logger.warn(
+            { err, accountId: accId, actId: String(act.id ?? "") },
+            "snaptrade: failed to upsert activity row; continuing",
+          );
         }
       }
       if (skippedUnknown > 0) {
         logger.info(
           { accountId: accId, skippedUnknown },
           "snaptrade activities skipped (unrecognised type)",
-        );
-      }
-      } catch (err) {
-        // Per-account failure used to bubble out as a 500 even though
-        // the connection had landed and most accounts had synced
-        // successfully. Log the failure so ops can see which account
-        // and broker hit it, but keep going so the user's other
-        // accounts (and the rest of the sync result) still complete.
-        logger.error(
-          { err, accountId: String(acc.id ?? "unknown"), connectionId: connId },
-          "snaptrade: per-account sync failed; continuing with next account",
         );
       }
     }
@@ -453,11 +731,14 @@ export async function syncDeveloper(developer: Developer): Promise<{
       accountsCount,
       holdingsCount,
       txCount,
+      optionsFetched,
       rawActivitiesFetched,
       skippedUnknownTotal,
       skippedUnknownLabels: [...skippedUnknownLabels],
+      errorCount: errors.length,
+      errorSteps: errors.map((e) => e.step),
     },
-    "SnapTrade sync complete",
+    errors.length === 0 ? "SnapTrade sync complete" : "SnapTrade sync partial",
   );
 
   return {
@@ -465,12 +746,19 @@ export async function syncDeveloper(developer: Developer): Promise<{
     accounts: accountsCount,
     holdings: holdingsCount,
     transactions: txCount,
+    options_fetched: optionsFetched,
     // Diagnostics so the UI can distinguish "broker returned nothing" from
     // "broker returned activities but Beacon's classifier didn't recognise
     // their type labels".
     raw_activities: rawActivitiesFetched,
     skipped_unknown: skippedUnknownTotal,
     skipped_labels: [...skippedUnknownLabels],
+    errors,
+    // fully_succeeded means: every SnapTrade SDK call succeeded for
+    // every account. The dashboard can rely on this to decide whether
+    // to show a green "Sync complete" banner or a yellow "Partial sync"
+    // banner with the per-step error breakdown.
+    fully_succeeded: errors.length === 0,
   };
 }
 

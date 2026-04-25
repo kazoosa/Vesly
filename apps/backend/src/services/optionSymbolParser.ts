@@ -149,7 +149,17 @@ export function parseOptionSymbol(input: unknown): OptionSpec | null {
  * persist for cross-broker identity.
  */
 function parseStructured(obj: Record<string, unknown>): OptionSpec | null {
-  // Walk one or two levels of nesting looking for the option fields.
+  // Walk through every place SnapTrade nests the option payload. The
+  // dedicated options endpoint (listOptionHoldings) returns:
+  //
+  //   { symbol: { option_symbol: { ticker, option_type, strike_price,
+  //               expiration_date, is_mini_option,
+  //               underlying_symbol: { symbol, ... } }, ... }, ... }
+  //
+  // The activities endpoint sometimes returns a flat string at
+  // pos.option_symbol or pos.symbol.option_symbol. We try every level
+  // and accept option_symbol as EITHER a string (OCC) or a structured
+  // object.
   const candidates: Record<string, unknown>[] = [obj];
   if (obj.symbol && typeof obj.symbol === "object") {
     candidates.push(obj.symbol as Record<string, unknown>);
@@ -157,30 +167,78 @@ function parseStructured(obj: Record<string, unknown>): OptionSpec | null {
     if (inner && typeof inner === "object") {
       candidates.push(inner as Record<string, unknown>);
     }
+    const innerOpt = (obj.symbol as Record<string, unknown>).option_symbol;
+    if (innerOpt && typeof innerOpt === "object") {
+      candidates.push(innerOpt as Record<string, unknown>);
+    }
+  }
+  if (obj.option_symbol && typeof obj.option_symbol === "object") {
+    candidates.push(obj.option_symbol as Record<string, unknown>);
   }
 
   for (const c of candidates) {
-    const optionSymbol = stringOr(c.option_symbol);
-    const strike = numberOr(c.strike_price ?? c.strike);
-    const expiryRaw = stringOr(c.expiration_date ?? c.expiration);
-    const optionType = optionTypeFrom(c.option_type ?? c.type);
-    const underlying = stringOr(c.underlying_symbol ?? c.underlying);
+    // option_symbol may be a string (legacy) or an object (current SDK).
+    const optionSymbolStr = stringOr(c.option_symbol);
+    const optionSymbolObj =
+      c.option_symbol && typeof c.option_symbol === "object"
+        ? (c.option_symbol as Record<string, unknown>)
+        : null;
 
-    // Need either an OCC string OR (strike + expiry + type + underlying)
-    // to reconstruct one.
-    if (optionSymbol) {
-      // Recurse via Strategy 2 to get a normalized OCC and underlying.
-      const fromOcc = parseOptionSymbol(optionSymbol);
+    const strike = numberOr(c.strike_price ?? c.strike ?? optionSymbolObj?.strike_price);
+    const expiryRaw = stringOr(
+      c.expiration_date ?? c.expiration ?? optionSymbolObj?.expiration_date,
+    );
+    const optionType = optionTypeFrom(
+      c.option_type ?? c.type ?? optionSymbolObj?.option_type,
+    );
+
+    // underlying may be a string OR an UnderlyingSymbol object with a
+    // .symbol field. Try both.
+    const underlyingRaw = c.underlying_symbol ?? c.underlying ?? optionSymbolObj?.underlying_symbol;
+    let underlying = stringOr(underlyingRaw);
+    if (!underlying && underlyingRaw && typeof underlyingRaw === "object") {
+      underlying = stringOr((underlyingRaw as Record<string, unknown>).symbol);
+    }
+
+    // Mini options have 10 shares per contract instead of 100. The SDK
+    // exposes this as `is_mini_option: boolean` on OptionsSymbol.
+    const isMini = (c.is_mini_option ?? optionSymbolObj?.is_mini_option) === true;
+    const multiplier = isMini ? 10 : 100;
+
+    // Strategy A: option_symbol is a string OCC ticker.
+    if (optionSymbolStr) {
+      const fromOcc = parseOptionSymbol(optionSymbolStr);
       if (fromOcc) {
-        // Override with structured fields when present (more reliable).
         return {
           ...fromOcc,
           strike: strike ?? fromOcc.strike,
           expiry: expiryRaw ? parseIsoDate(expiryRaw) ?? fromOcc.expiry : fromOcc.expiry,
           optionType: optionType ?? fromOcc.optionType,
+          multiplier,
         };
       }
     }
+
+    // Strategy B: option_symbol is the OptionsSymbol object — its
+    // `ticker` field is the OCC string.
+    if (optionSymbolObj) {
+      const occTicker = stringOr(optionSymbolObj.ticker);
+      if (occTicker) {
+        const fromOcc = parseOptionSymbol(occTicker);
+        if (fromOcc) {
+          return {
+            ...fromOcc,
+            strike: strike ?? fromOcc.strike,
+            expiry: expiryRaw ? parseIsoDate(expiryRaw) ?? fromOcc.expiry : fromOcc.expiry,
+            optionType: optionType ?? fromOcc.optionType,
+            multiplier,
+          };
+        }
+      }
+    }
+
+    // Strategy C: no OCC string anywhere, but we have all four
+    // components — reconstruct the OCC from them.
     if (strike != null && expiryRaw && optionType && underlying) {
       const expiry = parseIsoDate(expiryRaw);
       if (!expiry) continue;
@@ -191,7 +249,7 @@ function parseStructured(obj: Record<string, unknown>): OptionSpec | null {
         strike,
         expiry,
         occSymbol: toOccSymbol(underlying.toUpperCase(), expiry, cp, strike),
-        multiplier: 100,
+        multiplier,
       };
     }
   }

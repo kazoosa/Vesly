@@ -63,6 +63,12 @@ export function AccountsPage() {
     };
   }, []);
 
+  type SyncError = {
+    step: string;
+    accountId?: string;
+    message: string;
+    status?: number;
+  };
   const refresh = useMutation({
     mutationFn: () =>
       f<{
@@ -70,12 +76,23 @@ export function AccountsPage() {
         accounts: number;
         holdings: number;
         transactions: number;
+        options_fetched?: number;
         raw_activities?: number;
         skipped_unknown?: number;
         skipped_labels?: string[];
+        errors?: SyncError[];
+        fully_succeeded?: boolean;
       }>("/api/snaptrade/sync", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries(),
   });
+
+  const STEP_LABELS: Record<string, string> = {
+    list_connections: "Listing connections",
+    list_accounts: "Listing accounts",
+    positions: "Holdings (positions)",
+    options: "Options holdings",
+    activities: "Transactions & dividends",
+  };
 
   const wipeMock = useMutation({
     mutationFn: () => f<{ removed: number }>("/api/portfolio/wipe-demo", { method: "POST" }),
@@ -126,46 +143,80 @@ export function AccountsPage() {
         </div>
       </div>
 
-      {refresh.isSuccess && refresh.data && (
-        <div
-          role="status"
-          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300 space-y-1"
-        >
-          <div>
-            Last sync: {refresh.data.accounts} account{refresh.data.accounts === 1 ? "" : "s"},{" "}
-            {refresh.data.holdings} holding{refresh.data.holdings === 1 ? "" : "s"},{" "}
-            {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"}.
-          </div>
-          {refresh.data.transactions === 0 && (
-            <div className="opacity-80">
-              {(refresh.data.raw_activities ?? 0) === 0 ? (
-                <>
-                  SnapTrade returned <strong>0 raw activities</strong>. Either there's no
-                  trade history in the configured window, or your broker hasn't shared it
-                  yet (some take up to 24h after first connect). Try Refresh again later
-                  or import an activity CSV below.
-                </>
-              ) : (
-                <>
-                  SnapTrade returned <strong>{refresh.data.raw_activities}</strong>{" "}
-                  activities, but{" "}
-                  <strong>{refresh.data.skipped_unknown}</strong> had unrecognised type
-                  labels:{" "}
-                  <code className="text-[10px] bg-fg-primary/10 px-1 rounded">
-                    {(refresh.data.skipped_labels ?? []).join(", ") || "—"}
-                  </code>
-                </>
+      {refresh.isSuccess && refresh.data && (() => {
+        const isPartial = refresh.data.fully_succeeded === false;
+        const errs = refresh.data.errors ?? [];
+        const tone = isPartial
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+          : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+        return (
+          <div
+            role="status"
+            className={`rounded-md border px-3 py-2 text-xs space-y-1 ${tone}`}
+          >
+            <div>
+              <strong>{isPartial ? "Partial sync" : "Last sync"}:</strong>{" "}
+              {refresh.data.accounts} account{refresh.data.accounts === 1 ? "" : "s"},{" "}
+              {refresh.data.holdings} holding{refresh.data.holdings === 1 ? "" : "s"},{" "}
+              {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"}
+              {(refresh.data.options_fetched ?? 0) > 0 && (
+                <>, {refresh.data.options_fetched} option contract{refresh.data.options_fetched === 1 ? "" : "s"}</>
               )}
+              .
             </div>
-          )}
-        </div>
-      )}
+            {isPartial && errs.length > 0 && (
+              <div className="space-y-0.5">
+                <div className="font-semibold text-[10px] uppercase tracking-widest mt-1">
+                  Failed steps:
+                </div>
+                <ul className="list-disc list-inside opacity-90">
+                  {errs.map((e, i) => (
+                    <li key={i}>
+                      <strong>{STEP_LABELS[e.step] ?? e.step}</strong>
+                      {e.accountId && (
+                        <span className="opacity-70"> · {e.accountId.slice(0, 8)}…</span>
+                      )}
+                      {e.status && <span className="opacity-70"> · HTTP {e.status}</span>}
+                      <span className="opacity-80">: {e.message}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="text-[11px] opacity-80 mt-1">
+                  Click <strong>Refresh now</strong> to retry the failed steps. Successful data above is already saved.
+                </div>
+              </div>
+            )}
+            {!isPartial && refresh.data.transactions === 0 && (
+              <div className="opacity-80">
+                {(refresh.data.raw_activities ?? 0) === 0 ? (
+                  <>
+                    SnapTrade returned <strong>0 raw activities</strong>. Either there's no
+                    trade history in the configured window, or your broker hasn't shared it
+                    yet (some take up to 24h after first connect). Try Refresh again later
+                    or import an activity CSV below.
+                  </>
+                ) : (
+                  <>
+                    SnapTrade returned <strong>{refresh.data.raw_activities}</strong>{" "}
+                    activities, but{" "}
+                    <strong>{refresh.data.skipped_unknown}</strong> had unrecognised type
+                    labels:{" "}
+                    <code className="text-[10px] bg-fg-primary/10 px-1 rounded">
+                      {(refresh.data.skipped_labels ?? []).join(", ") || "—"}
+                    </code>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {refresh.isError && (
         <div
           role="alert"
           className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300"
         >
-          Sync failed: {(refresh.error as Error)?.message ?? "Unknown error"}
+          Sync request failed: {(refresh.error as Error)?.message ?? "Unknown error"}
         </div>
       )}
 
