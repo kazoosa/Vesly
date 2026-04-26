@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion, type Variants } from "framer-motion";
 import {
   Activity,
@@ -30,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "./dropdown-menu";
 import { useAuth } from "../../lib/auth";
+import { apiFetch } from "../../lib/api";
 import { useTheme } from "../../lib/theme";
 import { useBasePath } from "../../lib/basePath";
 import { APP_NAME } from "../../lib/brand";
@@ -88,15 +90,58 @@ export const SIDEBAR_COLLAPSED_PX = 49;
 export function SessionNavBar() {
   const [isCollapsed, setIsCollapsed] = useState(true);
   const { pathname } = useLocation();
-  const { developer, logout } = useAuth();
+  const { developer, logout, accessToken } = useAuth();
   const { resolvedTheme, toggle } = useTheme();
   const basePath = useBasePath();
+  const qc = useQueryClient();
 
   const NAV = NAV_ITEMS.map((n) => ({
     ...n,
     to: n.sub ? `${basePath}/${n.sub}` : basePath,
     end: !n.sub,
   }));
+
+  // Hover-prefetch — when the cursor enters a nav link, kick off
+  // the page's primary query in the background. By the time the
+  // user clicks, the data is already cached. Each entry maps the
+  // sub-path to the (queryKey, fetch) pair the destination page
+  // uses. Pages that don't appear here just don't get prefetched
+  // (no harm done).
+  function prefetchFor(sub: string) {
+    if (!accessToken) return;
+    const f = apiFetch(() => accessToken);
+    const tasks: Array<{ key: unknown[]; url: string }> = (() => {
+      switch (sub) {
+        case "":
+          return [
+            { key: ["summary"], url: "/api/portfolio/summary" },
+            { key: ["holdings"], url: "/api/portfolio/holdings" },
+          ];
+        case "holdings":
+          return [{ key: ["holdings"], url: "/api/portfolio/holdings" }];
+        case "transactions":
+          return [{ key: ["tx", "all", ""], url: "/api/portfolio/transactions?count=300" }];
+        case "dividends":
+          return [{ key: ["dividends"], url: "/api/portfolio/dividends" }];
+        case "options":
+          return [{ key: ["holdings"], url: "/api/portfolio/holdings" }];
+        case "allocation":
+          return [
+            {
+              key: ["allocation", true],
+              url: "/api/portfolio/allocation?rollupOptions=true",
+            },
+          ];
+        case "accounts":
+          return [{ key: ["accounts"], url: "/api/portfolio/accounts" }];
+        default:
+          return [];
+      }
+    })();
+    for (const t of tasks) {
+      qc.prefetchQuery({ queryKey: t.key, queryFn: () => f(t.url) });
+    }
+  }
 
   function isActive(to: string, end?: boolean) {
     if (end) return pathname === to;
@@ -154,6 +199,8 @@ export function SessionNavBar() {
                   <Link
                     to={item.to}
                     title={item.label}
+                    onMouseEnter={() => prefetchFor(item.sub)}
+                    onFocus={() => prefetchFor(item.sub)}
                     className={cn(
                       "flex h-9 items-center rounded-md px-2 transition-colors gap-2",
                       active
