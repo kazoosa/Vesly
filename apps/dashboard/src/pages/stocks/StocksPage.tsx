@@ -120,15 +120,19 @@ export function StocksPage() {
     >
       {!listCollapsed && (
         <aside className="md:sticky md:top-0 md:self-start md:max-h-[calc(100vh-3rem)] md:overflow-y-auto">
-          <div className="flex items-center justify-end mb-2">
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className="text-[10px] uppercase tracking-widest text-fg-muted">
+              Symbols
+            </span>
             <button
               type="button"
               onClick={() => setListCollapsed(true)}
-              className="text-fg-muted hover:text-fg-primary text-xs px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
+              className="inline-flex items-center gap-1 text-fg-muted hover:text-fg-primary text-[11px] px-2 py-1 rounded border border-border-subtle hover:bg-bg-hover transition-colors"
               title="Collapse symbol list"
               aria-label="Collapse symbol list"
             >
-              ‹
+              <span aria-hidden>‹</span>
+              <span>Hide</span>
             </button>
           </div>
           <StockList
