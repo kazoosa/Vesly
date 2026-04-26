@@ -48,22 +48,93 @@ interface Holding {
 }
 
 type Layout = "expiry" | "underlying";
+type Tab = "open" | "closed";
+
+interface Tx {
+  id: string;
+  date: string;
+  type: string;
+  ticker_symbol: string;
+  security_name: string;
+  quantity: number;
+  price: number;
+  amount: number;
+}
 
 export function OptionsPage() {
   const { accessToken } = useAuth();
   const f = apiFetch(() => accessToken);
   const to = useTo();
   const [layout, setLayout] = useState<Layout>("expiry");
+  const [tab, setTab] = useState<Tab>("open");
 
   const q = useQuery({
     queryKey: ["holdings"],
     queryFn: () => f<{ holdings: Holding[]; total_value: number }>("/api/portfolio/holdings"),
   });
 
+  // Pull a wide window of transactions so we can build the closed-history
+  // view. This is the same endpoint the Transactions page uses; staleTime
+  // means we don't re-pay the cost when the user toggles tabs.
+  const txQ = useQuery({
+    queryKey: ["tx", "options-history"],
+    queryFn: () =>
+      f<{ transactions: Tx[]; total: number }>("/api/portfolio/transactions?count=500"),
+    staleTime: 30_000,
+  });
+
   const options = useMemo(
     () => (q.data?.holdings ?? []).filter((h): h is Holding & { option: NonNullable<Holding["option"]> } => Boolean(h.option)),
     [q.data],
   );
+
+  // Closed contracts = option-typed transactions grouped by ticker
+  // whose net quantity is 0 (everything bought has been sold/expired/
+  // assigned). Open option holdings are shown in the "open" tab so
+  // exclude any ticker that still has an open position.
+  const openTickers = useMemo(
+    () => new Set(options.map((o) => o.ticker_symbol.toUpperCase())),
+    [options],
+  );
+  const closedContracts = useMemo(() => {
+    const txs = txQ.data?.transactions ?? [];
+    const byTicker = new Map<string, Tx[]>();
+    for (const t of txs) {
+      // Detect option tickers via the same patterns the backend parser
+      // uses: Fidelity "-AAPL260424C150" or OCC "AAPL  260424C00150000".
+      // Both contain a digit-letter-digit suffix (date + C/P + strike).
+      const tk = t.ticker_symbol;
+      if (!tk) continue;
+      const isOption =
+        /^-[A-Z.]+\d{6}[CP]\d/.test(tk) ||
+        /^[A-Z.]+\s+\d{6}[CP]\d/.test(tk) ||
+        ["option_expired", "option_assigned", "option_exercised"].includes(t.type);
+      if (!isOption) continue;
+      if (openTickers.has(tk.toUpperCase())) continue;
+      const list = byTicker.get(tk) ?? [];
+      list.push(t);
+      byTicker.set(tk, list);
+    }
+    return [...byTicker.entries()]
+      .map(([ticker, rows]) => {
+        const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+        const opened = sorted[0]!.date;
+        const closed = sorted[sorted.length - 1]!.date;
+        // Net P/L = sum of amounts (sells/expirations are positive,
+        // buys are negative — same convention used everywhere else).
+        const realizedPL = sorted.reduce((sum, t) => sum + t.amount, 0);
+        return {
+          ticker,
+          name: sorted[0]!.security_name,
+          opened,
+          closed,
+          rows: sorted,
+          realizedPL,
+          eventCount: sorted.length,
+        };
+      })
+      .sort((a, b) => b.closed.localeCompare(a.closed));
+  }, [txQ.data, openTickers]);
 
   const groupedByExpiry = useMemo(() => {
     const map = new Map<string, typeof options>();
@@ -143,7 +214,7 @@ export function OptionsPage() {
     );
   }
 
-  if (options.length === 0) {
+  if (options.length === 0 && closedContracts.length === 0) {
     return (
       <div className="space-y-6">
         <h1 className="text-xl font-semibold text-fg-primary">Options</h1>
@@ -184,19 +255,39 @@ export function OptionsPage() {
             )}
           </p>
         </div>
-        <div className="flex gap-1 text-xs">
-          <button
-            className={`btn-ghost ${layout === "expiry" ? "bg-bg-hover text-fg-primary" : ""}`}
-            onClick={() => setLayout("expiry")}
-          >
-            By expiry
-          </button>
-          <button
-            className={`btn-ghost ${layout === "underlying" ? "bg-bg-hover text-fg-primary" : ""}`}
-            onClick={() => setLayout("underlying")}
-          >
-            By underlying
-          </button>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-1 text-xs">
+            <button
+              className={`btn-ghost ${tab === "open" ? "bg-bg-hover text-fg-primary" : ""}`}
+              onClick={() => setTab("open")}
+            >
+              Open
+              <span className="ml-1.5 text-fg-fainter font-num">{options.length}</span>
+            </button>
+            <button
+              className={`btn-ghost ${tab === "closed" ? "bg-bg-hover text-fg-primary" : ""}`}
+              onClick={() => setTab("closed")}
+            >
+              Closed
+              <span className="ml-1.5 text-fg-fainter font-num">{closedContracts.length}</span>
+            </button>
+          </div>
+          {tab === "open" && (
+            <div className="flex gap-1 text-xs">
+              <button
+                className={`btn-ghost ${layout === "expiry" ? "bg-bg-hover text-fg-primary" : ""}`}
+                onClick={() => setLayout("expiry")}
+              >
+                By expiry
+              </button>
+              <button
+                className={`btn-ghost ${layout === "underlying" ? "bg-bg-hover text-fg-primary" : ""}`}
+                onClick={() => setLayout("underlying")}
+              >
+                By underlying
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -214,19 +305,96 @@ export function OptionsPage() {
         />
       </div>
 
-      <div className="space-y-4">
-        {(layout === "expiry" ? groupedByExpiry : groupedByUnderlying).map(
-          ([groupKey, items]) => (
-            <OptionGroup
-              key={groupKey}
-              groupKey={groupKey}
-              layout={layout}
-              items={items}
-              to={to}
-            />
-          ),
-        )}
+      {tab === "open" && (
+        <div className="space-y-4">
+          {options.length === 0 ? (
+            <div className="card p-8 text-center text-sm text-fg-muted">
+              No open option positions. Switch to <strong>Closed</strong> to see
+              historical contracts.
+            </div>
+          ) : (
+            (layout === "expiry" ? groupedByExpiry : groupedByUnderlying).map(
+              ([groupKey, items]) => (
+                <OptionGroup
+                  key={groupKey}
+                  groupKey={groupKey}
+                  layout={layout}
+                  items={items}
+                  to={to}
+                />
+              ),
+            )
+          )}
+        </div>
+      )}
+
+      {tab === "closed" && (
+        <ClosedContractsTable rows={closedContracts} />
+      )}
+    </div>
+  );
+}
+
+function ClosedContractsTable({
+  rows,
+}: {
+  rows: Array<{
+    ticker: string;
+    name: string;
+    opened: string;
+    closed: string;
+    rows: Tx[];
+    realizedPL: number;
+    eventCount: number;
+  }>;
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="card p-8 text-center text-sm text-fg-muted">
+        No closed option contracts in the visible transaction window.
+        {" "}
+        Trades that opened and closed within your imported activity will
+        show up here once they're recorded.
       </div>
+    );
+  }
+  return (
+    <div className="card overflow-hidden">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Contract</th>
+            <th>Opened</th>
+            <th>Closed</th>
+            <th className="text-right">Events</th>
+            <th className="text-right">Realized P/L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((c) => (
+            <tr key={c.ticker}>
+              <td className="font-num text-fg-primary text-sm" title={c.name}>
+                {c.ticker}
+                {c.name && c.name !== c.ticker && (
+                  <div className="text-[10px] text-fg-muted truncate max-w-[260px]">
+                    {c.name}
+                  </div>
+                )}
+              </td>
+              <td className="text-xs text-fg-secondary font-num">{c.opened}</td>
+              <td className="text-xs text-fg-secondary font-num">{c.closed}</td>
+              <td className="text-right font-num text-xs text-fg-muted">
+                {c.eventCount}
+              </td>
+              <td
+                className={`text-right font-num ${c.realizedPL >= 0 ? "pos" : "neg"}`}
+              >
+                {fmtUsd(c.realizedPL, { showSign: true })}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
