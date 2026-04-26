@@ -503,6 +503,7 @@ html.dark .kpi-card { background: linear-gradient(180deg, #16161f, #11111a); }
 
 /* ─────────────── Infra cards ─────────────── */
 
+.grid-1 { display: block; }
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));

@@ -209,9 +209,9 @@ export function App() {
     ? rollUpStatus(s)
     : "unconfigured";
 
-  // Build the draggable sections (Business + Health). Other sections
-  // stay as fixed inline renders below — the brief explicitly only
-  // calls these two out as customizable.
+  // Every section on the page is a draggable section in edit mode.
+  // Sections themselves can be reordered relative to each other; each
+  // section's widgets reorder within their own grid.
   const dndSections = useMemo<SectionDef[]>(() => {
     if (!s) return [];
     return [
@@ -233,8 +233,35 @@ export function App() {
         strategy: rectSortingStrategy,
         widgets: healthWidgets(s),
       },
+      {
+        id: "tier",
+        title: "Free tier usage",
+        subtitle: "How close you are to limits",
+        icon: <Icon.Zap />,
+        gridClass: "grid-2",
+        strategy: rectSortingStrategy,
+        widgets: tierWidgets(s),
+      },
+      {
+        id: "activity",
+        title: "Recent activity",
+        subtitle: "Code + deploys + new users",
+        icon: <Icon.GitCommit />,
+        gridClass: "grid-3",
+        strategy: rectSortingStrategy,
+        widgets: activityWidgets(s),
+      },
+      {
+        id: "selftest",
+        title: "Self-test",
+        subtitle: "Live API smoke battery against the deployed backend",
+        icon: <Icon.Beaker />,
+        gridClass: "grid-1",
+        strategy: rectSortingStrategy,
+        widgets: selfTestWidgets(s, fetchOps, loading),
+      },
     ];
-  }, [s]);
+  }, [s, fetchOps, loading]);
 
   return (
     <div className="app">
@@ -298,123 +325,6 @@ export function App() {
           <StatusBanner status={overallStatus} services={s} />
 
           <DashboardLayoutGrid sections={dndSections} editing={editing} />
-
-          <SectionHeader icon={<Icon.Zap />} title="Free tier usage" subtitle="How close you are to limits" />
-          <div className="grid-2">
-            <InfraCard
-              icon={<Icon.Database />}
-              title="Database (Neon)"
-              subtitle="All app data"
-              status={s.neon?.status}
-              hero={String(s.neon?.data?.storageHuman ?? "—")}
-              progress={{
-                value: neonPct(s.neon),
-                label: "3 GB free tier",
-              }}
-              metrics={[
-                {
-                  label: "Compute (this hour)",
-                  value: `${s.neon?.data?.computeHours ?? 0} CU-h`,
-                  sub: "100 CU-h / month free",
-                },
-                {
-                  label: "Branches",
-                  value: String(s.neon?.data?.branches ?? "—"),
-                },
-                {
-                  label: "Postgres version",
-                  value: String(s.neon?.data?.pgVersion ?? "—"),
-                },
-              ]}
-              link="https://console.neon.tech"
-              linkLabel="Neon"
-            />
-
-            <InfraCard
-              icon={<Icon.Layers />}
-              title="Cache (Vercel Redis)"
-              subtitle="Speeds up sessions + sync jobs"
-              status={s.upstash?.status}
-              hero={fmtNumber(s.upstash?.data?.commandsToday)}
-              progress={{
-                value: upstashPct(s.upstash),
-                label: "500,000 commands / day",
-              }}
-              metrics={[
-                {
-                  label: "Keys stored",
-                  value: fmtNumber(s.upstash?.data?.keys),
-                },
-                {
-                  label: "Bandwidth today",
-                  value: bytesH(s.upstash?.data?.bandwidthBytes),
-                },
-              ]}
-              link="https://vercel.com/dashboard/stores"
-              linkLabel="Vercel"
-            />
-          </div>
-
-          <SectionHeader
-            icon={<Icon.GitCommit />}
-            title="Recent activity"
-            subtitle="Code + deploys + new users"
-          />
-          <div className="grid-3">
-            <ActivityCard
-              icon={<Icon.GitCommit />}
-              title="Recent commits"
-              status={s.github?.status === "error" ? "warn" : s.github?.status}
-              events={
-                (s.github?.data?._events as
-                  | Array<{ title: string; time?: string }>
-                  | undefined) ?? undefined
-              }
-              errorMessage={
-                s.github?.status === "error"
-                  ? "GitHub rate-limited — add a GITHUB_TOKEN env var to fix."
-                  : undefined
-              }
-              link="https://github.com/kazoosa/Beacon/commits/main"
-              linkLabel="GitHub"
-            />
-
-            <ActivityCard
-              icon={<Icon.Server />}
-              title="Recent backend deploys"
-              status={s.render?.status}
-              events={
-                (s.render?.data?._events as
-                  | Array<{ title: string; time?: string }>
-                  | undefined) ?? undefined
-              }
-              link="https://dashboard.render.com"
-              linkLabel="Render"
-            />
-
-            <ActivityCard
-              icon={<Icon.Users />}
-              title="Latest signups"
-              status={s.business?.status}
-              events={
-                (s.business?.data?._recentSignups as
-                  | Array<{ title: string; time?: string }>
-                  | undefined) ?? undefined
-              }
-              emptyMessage="No signups yet. First one will show up here."
-            />
-          </div>
-
-          <SectionHeader
-            icon={<Icon.Beaker />}
-            title="Self-test"
-            subtitle="Live API smoke battery against the deployed backend"
-          />
-          <SelfTestCard
-            service={s.selftest}
-            onRerun={fetchOps}
-            rerunning={loading}
-          />
         </>
       )}
 
@@ -641,6 +551,157 @@ function businessWidgets(business: ServiceData | undefined): WidgetDef[] {
           value={holdings.toLocaleString()}
           icon={<Icon.Layers />}
           trend={total > 0 ? `${(holdings / total).toFixed(0)} per user avg` : undefined}
+        />
+      ),
+    },
+  ];
+}
+
+function tierWidgets(s: NonNullable<OpsPayload["services"]>): WidgetDef[] {
+  return [
+    {
+      id: "tier.neon",
+      label: "Database (Neon)",
+      render: () => (
+        <InfraCard
+          icon={<Icon.Database />}
+          title="Database (Neon)"
+          subtitle="All app data"
+          status={s.neon?.status}
+          hero={String(s.neon?.data?.storageHuman ?? "—")}
+          progress={{
+            value: neonPct(s.neon),
+            label: "3 GB free tier",
+          }}
+          metrics={[
+            {
+              label: "Compute (this hour)",
+              value: `${s.neon?.data?.computeHours ?? 0} CU-h`,
+              sub: "100 CU-h / month free",
+            },
+            {
+              label: "Branches",
+              value: String(s.neon?.data?.branches ?? "—"),
+            },
+            {
+              label: "Postgres version",
+              value: String(s.neon?.data?.pgVersion ?? "—"),
+            },
+          ]}
+          link="https://console.neon.tech"
+          linkLabel="Neon"
+        />
+      ),
+    },
+    {
+      id: "tier.upstash",
+      label: "Cache (Vercel Redis)",
+      render: () => (
+        <InfraCard
+          icon={<Icon.Layers />}
+          title="Cache (Vercel Redis)"
+          subtitle="Speeds up sessions + sync jobs"
+          status={s.upstash?.status}
+          hero={fmtNumber(s.upstash?.data?.commandsToday)}
+          progress={{
+            value: upstashPct(s.upstash),
+            label: "500,000 commands / day",
+          }}
+          metrics={[
+            {
+              label: "Keys stored",
+              value: fmtNumber(s.upstash?.data?.keys),
+            },
+            {
+              label: "Bandwidth today",
+              value: bytesH(s.upstash?.data?.bandwidthBytes),
+            },
+          ]}
+          link="https://vercel.com/dashboard/stores"
+          linkLabel="Vercel"
+        />
+      ),
+    },
+  ];
+}
+
+function activityWidgets(s: NonNullable<OpsPayload["services"]>): WidgetDef[] {
+  return [
+    {
+      id: "activity.commits",
+      label: "Recent commits",
+      render: () => (
+        <ActivityCard
+          icon={<Icon.GitCommit />}
+          title="Recent commits"
+          status={s.github?.status === "error" ? "warn" : s.github?.status}
+          events={
+            (s.github?.data?._events as
+              | Array<{ title: string; time?: string }>
+              | undefined) ?? undefined
+          }
+          errorMessage={
+            s.github?.status === "error"
+              ? "GitHub rate-limited — add a GITHUB_TOKEN env var to fix."
+              : undefined
+          }
+          link="https://github.com/kazoosa/Beacon/commits/main"
+          linkLabel="GitHub"
+        />
+      ),
+    },
+    {
+      id: "activity.deploys",
+      label: "Recent backend deploys",
+      render: () => (
+        <ActivityCard
+          icon={<Icon.Server />}
+          title="Recent backend deploys"
+          status={s.render?.status}
+          events={
+            (s.render?.data?._events as
+              | Array<{ title: string; time?: string }>
+              | undefined) ?? undefined
+          }
+          link="https://dashboard.render.com"
+          linkLabel="Render"
+        />
+      ),
+    },
+    {
+      id: "activity.signups",
+      label: "Latest signups",
+      render: () => (
+        <ActivityCard
+          icon={<Icon.Users />}
+          title="Latest signups"
+          status={s.business?.status}
+          events={
+            (s.business?.data?._recentSignups as
+              | Array<{ title: string; time?: string }>
+              | undefined) ?? undefined
+          }
+          emptyMessage="No signups yet. First one will show up here."
+        />
+      ),
+    },
+  ];
+}
+
+function selfTestWidgets(
+  s: NonNullable<OpsPayload["services"]>,
+  onRerun: () => Promise<void> | void,
+  rerunning: boolean,
+): WidgetDef[] {
+  return [
+    {
+      id: "selftest.battery",
+      label: "Self-test battery",
+      render: () => (
+        <SelfTestCard
+          service={s.selftest}
+          onRerun={onRerun}
+          rerunning={rerunning}
         />
       ),
     },
