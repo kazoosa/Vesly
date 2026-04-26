@@ -161,12 +161,22 @@ export function ConnectButton() {
    * Sync after a brokerage was just connected.
    *
    * `firstConnect=true` means this fires from SnapTradeReact's
-   * onSuccess (vs the Refresh button). Some brokers — Robinhood
-   * especially — lag 30-60s between authorizing the connection and
-   * having transaction history available via SnapTrade's API. If the
-   * first call returns transactions: 0, we wait and retry once before
-   * showing the result, so the user doesn't see a fake-empty banner
-   * and have to click Refresh.
+   * onSuccess (vs the Refresh button). Two-phase flow on first
+   * connects:
+   *
+   *   Phase 1 — call /sync immediately. Accounts and holdings come
+   *     back instantly because they use SnapTrade's positions endpoint
+   *     which doesn't have the cold-cache problem. Render those
+   *     counts right away with a "still loading transactions…" hint
+   *     so the user sees real progress.
+   *
+   *   Phase 2 — if transactions came back 0, wait 8 seconds (giving
+   *     SnapTrade time to finish its broker-side activities pull)
+   *     and retry exactly once. Show whatever the second call
+   *     returns as the final result.
+   *
+   * Refresh-now syncs (firstConnect=false) skip both phases — they
+   * just call once and render whatever comes back.
    */
   async function afterSnapTradeConnect(firstConnect = false) {
     setSyncResult(null);
@@ -177,43 +187,68 @@ export function ConnectButton() {
         holdings: 0,
         transactions: 0,
         fully_succeeded: true,
-        // pending flag drives a "Pulling your history…" message in the
-        // banner so the user sees activity instead of an empty banner
-        // while we wait for SnapTrade to catch up.
         pending: true,
       });
     }
     try {
-      let out = await runOneSync();
-      // Aggressive retry on cold-start lag. Only on first connects,
-      // only when we got 0 transactions AND 0 raw activities back
-      // (the cold-start signature — distinguishes from "user has no
-      // history" which still returns the activity rows we asked for).
-      // Three attempts total at 0s + 5s + 15s ≈ 20s wall time worst
-      // case. After that we trust the result and stop hammering
-      // SnapTrade's API.
-      const RETRY_DELAYS_MS = [5_000, 15_000];
-      for (const delay of RETRY_DELAYS_MS) {
-        const empty =
-          firstConnect &&
-          (out.transactions ?? 0) === 0 &&
-          (out.raw_activities ?? 0) === 0;
-        if (!empty) break;
-        await new Promise((r) => setTimeout(r, delay));
-        out = await runOneSync();
+      const out = await runOneSync();
+
+      // Did the cold-cache signature hit? (firstConnect AND no
+      // transactions AND no raw activities). If yes, show the
+      // accounts+holdings we DO have, then retry once after 8s.
+      const showedFirstPhase =
+        firstConnect &&
+        (out.transactions ?? 0) === 0 &&
+        (out.raw_activities ?? 0) === 0;
+
+      if (showedFirstPhase) {
+        setSyncResult({
+          ok: true,
+          accounts: out.accounts ?? 0,
+          holdings: out.holdings ?? 0,
+          transactions: 0,
+          options_fetched: out.options_fetched,
+          raw_activities: out.raw_activities,
+          skipped_unknown: out.skipped_unknown,
+          skipped_labels: out.skipped_labels,
+          errors: out.errors,
+          fully_succeeded: out.fully_succeeded,
+          pending: true, // banner says "loading transactions…"
+        });
+        // Invalidate accounts + holdings now so the rest of the
+        // dashboard updates while we wait for the transaction retry.
+        qc.invalidateQueries({ queryKey: ["accounts"] });
+        qc.invalidateQueries({ queryKey: ["holdings"] });
+        await new Promise((r) => setTimeout(r, 8_000));
+        const final = await runOneSync();
+        setSyncResult({
+          ok: true,
+          accounts: final.accounts ?? 0,
+          holdings: final.holdings ?? 0,
+          transactions: final.transactions ?? 0,
+          options_fetched: final.options_fetched,
+          raw_activities: final.raw_activities,
+          skipped_unknown: final.skipped_unknown,
+          skipped_labels: final.skipped_labels,
+          errors: final.errors,
+          fully_succeeded: final.fully_succeeded,
+        });
+      } else {
+        // Either we got transactions on the first call, or this isn't
+        // a first connect — show what we got and stop.
+        setSyncResult({
+          ok: true,
+          accounts: out.accounts ?? 0,
+          holdings: out.holdings ?? 0,
+          transactions: out.transactions ?? 0,
+          options_fetched: out.options_fetched,
+          raw_activities: out.raw_activities,
+          skipped_unknown: out.skipped_unknown,
+          skipped_labels: out.skipped_labels,
+          errors: out.errors,
+          fully_succeeded: out.fully_succeeded,
+        });
       }
-      setSyncResult({
-        ok: true,
-        accounts: out.accounts ?? 0,
-        holdings: out.holdings ?? 0,
-        transactions: out.transactions ?? 0,
-        options_fetched: out.options_fetched,
-        raw_activities: out.raw_activities,
-        skipped_unknown: out.skipped_unknown,
-        skipped_labels: out.skipped_labels,
-        errors: out.errors,
-        fully_succeeded: out.fully_succeeded,
-      });
     } catch (err) {
       // The endpoint itself throwing is now rare — every per-call
       // failure is wrapped on the backend. This branch is for true
@@ -277,17 +312,31 @@ export function ConnectButton() {
               ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
               : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
           if (isPending) {
+            const hasPartial = (syncResult.accounts ?? 0) > 0;
             return (
               <div
                 role="status"
                 className={`mt-3 rounded-md border p-2.5 text-[12px] leading-snug ${tone}`}
               >
-                <div className="font-semibold">Pulling history…</div>
-                <div className="mt-1 opacity-90">
-                  Connection accepted. Some brokers (notably Robinhood) take
-                  up to a minute to expose transaction history after first
-                  connect — this banner will update as soon as the data arrives.
+                <div className="font-semibold flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-current animate-pulse" />
+                  {hasPartial ? "Loading transactions…" : "Pulling history…"}
                 </div>
+                {hasPartial ? (
+                  <div className="mt-1 opacity-90">
+                    {syncResult.accounts} account{syncResult.accounts === 1 ? "" : "s"} and{" "}
+                    {syncResult.holdings} holding{syncResult.holdings === 1 ? "" : "s"}{" "}
+                    are in. Transaction history takes a few seconds longer —
+                    SnapTrade is fetching it from your broker right now.
+                  </div>
+                ) : (
+                  <div className="mt-1 opacity-90">
+                    Connection accepted. Some brokers (notably Robinhood) take
+                    up to a minute to expose transaction history after first
+                    connect — this banner will update as soon as the data
+                    arrives.
+                  </div>
+                )}
               </div>
             );
           }
