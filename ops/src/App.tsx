@@ -262,13 +262,24 @@ export function App() {
           >
             {theme === "dark" ? <Icon.Sun /> : <Icon.Moon />}
           </button>
-          <button
-            className={`btn ${editing ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setEditing((e) => !e)}
-            title={editing ? "Exit edit mode" : "Customize the layout"}
-          >
-            {editing ? "Done" : <><Icon.Edit /> Edit</>}
-          </button>
+          {editing ? (
+            <button
+              className="btn btn-primary"
+              onClick={() => setEditing(false)}
+              title="Exit edit mode"
+            >
+              Done
+            </button>
+          ) : (
+            <button
+              className="icon-btn"
+              onClick={() => setEditing(true)}
+              title="Customize the layout"
+              aria-label="Edit layout"
+            >
+              <Icon.Edit />
+            </button>
+          )}
           <button className="icon-btn" onClick={fetchOps} disabled={loading} title="Refresh">
             <Icon.RefreshCw className={loading ? "spin" : ""} />
           </button>

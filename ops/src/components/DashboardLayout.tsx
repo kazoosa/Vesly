@@ -308,9 +308,9 @@ export function DashboardLayoutGrid({ sections, editing, staticRender }: Props) 
         </SortableContext>
       </DndContext>
 
-      {hiddenWidgets.length > 0 && (
-        <div className="add-widget-panel">
-          <div className="add-widget-title">Hidden widgets</div>
+      <div className="add-widget-panel">
+        <div className="add-widget-title">Add widget</div>
+        {hiddenWidgets.length > 0 ? (
           <div className="add-widget-list">
             {hiddenWidgets.map((w) => (
               <button
@@ -324,8 +324,14 @@ export function DashboardLayoutGrid({ sections, editing, staticRender }: Props) 
               </button>
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="add-widget-empty">
+            Nothing to add — every widget is on the dashboard. Click ×
+            on a widget to hide it; it will appear here so you can add
+            it back later.
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -382,22 +388,32 @@ function SortableSection({
 
   return (
     <div ref={setNodeRef} style={style} className="dnd-section">
-      <div className="dnd-section-head">
-        <button
-          type="button"
+      {/* Section head is the drag surface for the section. Inner widget
+          DndContext stops events from bubbling so dragging a card
+          doesn't also drag its parent section. */}
+      <div
+        className="dnd-section-head"
+        {...attributes}
+        {...listeners}
+        style={{ cursor: "grab" }}
+      >
+        <span
           className="dnd-section-handle"
-          {...attributes}
-          {...listeners}
           aria-label={`Drag section ${section.title}`}
           title="Drag to reorder section"
         >
           <Icon.GripVertical />
-        </button>
+        </span>
         <SectionHeading section={section} />
       </div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onWidgetDragEnd}>
         <SortableContext items={widgetOrder} strategy={section.strategy}>
-          <div className={section.gridClass}>
+          <div
+            className={section.gridClass}
+            // Stop pointer events on the widget grid from starting a
+            // drag on the OUTER section container.
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             {widgetOrder.map((wid) => {
               const w = widgetById.get(wid);
               if (!w) return null;
@@ -432,25 +448,38 @@ function SortableWidget({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.4 : 1,
+    cursor: isDragging ? "grabbing" : "grab",
   };
 
   return (
-    <div ref={setNodeRef} style={style} className="dnd-widget">
+    // The whole card is the drag surface — listeners spread on the
+    // wrapper div, not just a small handle. The grip icon stays as a
+    // visual affordance + ARIA-labelled keyboard target. The remove
+    // button stops drag listeners via stopPropagation in its onClick
+    // so the user can click × without accidentally starting a drag.
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="dnd-widget"
+      {...attributes}
+      {...listeners}
+    >
       <div className="dnd-widget-controls">
-        <button
-          type="button"
+        <span
           className="dnd-handle"
-          {...attributes}
-          {...listeners}
           aria-label={`Drag ${widget.label}`}
-          title={`Drag ${widget.label}`}
+          title="Drag to reorder"
         >
           <Icon.GripVertical />
-        </button>
+        </span>
         <button
           type="button"
           className="dnd-remove"
-          onClick={() => onHide(widget.id)}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onHide(widget.id);
+          }}
           aria-label={`Hide ${widget.label}`}
           title={`Hide ${widget.label}`}
         >
