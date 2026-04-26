@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { SnapTradeReact } from "snaptrade-react";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
+import { PostConnectSyncOverlay, type StepState } from "./PostConnectSyncOverlay";
 
 declare global {
   interface Window {
@@ -28,6 +29,21 @@ export function ConnectButton() {
   const [error, setError] = useState<string | null>(null);
   const [snapLoginLink, setSnapLoginLink] = useState<string | null>(null);
   const syncFiredRef = useRef(false);
+
+  // First-connect overlay state. Hidden for Refresh-now flows.
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [overlayReady, setOverlayReady] = useState(false);
+  const [overlayElapsed, setOverlayElapsed] = useState(0);
+  const elapsedTimerRef = useRef<number | null>(null);
+  const [overlaySteps, setOverlaySteps] = useState<{
+    accounts: { state: StepState; count?: number };
+    holdings: { state: StepState; count?: number };
+    transactions: { state: StepState; count?: number };
+  }>({
+    accounts: { state: "pending" },
+    holdings: { state: "pending" },
+    transactions: { state: "pending" },
+  });
   // Surface what the post-connect sync actually pulled. Without this,
   // a successful connect that finds zero history is indistinguishable
   // from a silent failure — both leave Transactions/Dividends blank.
@@ -157,30 +173,58 @@ export function ConnectButton() {
     }>("/api/snaptrade/sync", { method: "POST" });
   }
 
+  function startOverlayTimer() {
+    setOverlayElapsed(0);
+    if (elapsedTimerRef.current) window.clearInterval(elapsedTimerRef.current);
+    elapsedTimerRef.current = window.setInterval(
+      () => setOverlayElapsed((s) => s + 1),
+      1000,
+    );
+  }
+  function stopOverlayTimer() {
+    if (elapsedTimerRef.current) {
+      window.clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
+  }
+  useEffect(() => stopOverlayTimer, []);
+
   /**
    * Sync after a brokerage was just connected.
    *
-   * `firstConnect=true` means this fires from SnapTradeReact's
-   * onSuccess (vs the Refresh button). Two-phase flow on first
-   * connects:
+   * On firstConnect=true we open a blocking overlay that doesn't
+   * dismiss until accounts + holdings + transactions have all
+   * resolved. The user can sit there for several minutes if
+   * SnapTrade is slow on a fresh Robinhood connect — that's by
+   * design, the alternative is showing them half-loaded data
+   * and confusing them about what's missing vs what's slow.
    *
-   *   Phase 1 — call /sync immediately. Accounts and holdings come
-   *     back instantly because they use SnapTrade's positions endpoint
-   *     which doesn't have the cold-cache problem. Render those
-   *     counts right away with a "still loading transactions…" hint
-   *     so the user sees real progress.
+   * The backend /sync endpoint is monolithic — it returns once
+   * after every step is done — so we drive the overlay's
+   * step-by-step display on heuristic timings (accounts and
+   * holdings mark "in progress" immediately, flip to "done" after
+   * a brief delay since those parts are always fast). Transactions
+   * stays "in progress" until the actual response arrives.
    *
-   *   Phase 2 — if transactions came back 0, wait 8 seconds (giving
-   *     SnapTrade time to finish its broker-side activities pull)
-   *     and retry exactly once. Show whatever the second call
-   *     returns as the final result.
+   * If the first response had 0 transactions (cold-cache signature),
+   * we wait 8s and retry once — same logic as before but driven
+   * from inside the overlay so the user stays informed.
    *
-   * Refresh-now syncs (firstConnect=false) skip both phases — they
-   * just call once and render whatever comes back.
+   * Refresh-now (firstConnect=false) skips the overlay entirely
+   * and just updates the existing inline banner — non-blocking.
    */
   async function afterSnapTradeConnect(firstConnect = false) {
     setSyncResult(null);
     if (firstConnect) {
+      setOverlaySteps({
+        accounts: { state: "in_progress" },
+        holdings: { state: "in_progress" },
+        transactions: { state: "in_progress" },
+      });
+      setOverlayReady(false);
+      setOverlayOpen(true);
+      startOverlayTimer();
+    } else {
       setSyncResult({
         ok: true,
         accounts: 0,
@@ -190,33 +234,32 @@ export function ConnectButton() {
         pending: true,
       });
     }
+
     try {
       const out = await runOneSync();
 
-      // Did the cold-cache signature hit? (firstConnect AND no
-      // transactions AND no raw activities). If yes, show the
-      // accounts+holdings we DO have, then retry once after 8s.
-      const showedFirstPhase =
+      // First sync done: we now know real account / holdings / tx counts.
+      // For the overlay: accounts and holdings are definitely done at
+      // this point (the backend wouldn't have returned without them).
+      // Transactions may legitimately be 0 (cold cache) — kick off
+      // retry below if so, otherwise mark done.
+      if (firstConnect) {
+        setOverlaySteps((prev) => ({
+          accounts: { state: "done", count: out.accounts ?? 0 },
+          holdings: { state: "done", count: out.holdings ?? 0 },
+          transactions: prev.transactions, // decide below
+        }));
+      }
+
+      const coldCache =
         firstConnect &&
         (out.transactions ?? 0) === 0 &&
         (out.raw_activities ?? 0) === 0;
 
-      if (showedFirstPhase) {
-        setSyncResult({
-          ok: true,
-          accounts: out.accounts ?? 0,
-          holdings: out.holdings ?? 0,
-          transactions: 0,
-          options_fetched: out.options_fetched,
-          raw_activities: out.raw_activities,
-          skipped_unknown: out.skipped_unknown,
-          skipped_labels: out.skipped_labels,
-          errors: out.errors,
-          fully_succeeded: out.fully_succeeded,
-          pending: true, // banner says "loading transactions…"
-        });
-        // Invalidate accounts + holdings now so the rest of the
-        // dashboard updates while we wait for the transaction retry.
+      if (coldCache) {
+        // Invalidate accounts + holdings now so the dashboard
+        // updates underneath the overlay (user sees holdings the
+        // moment they click Continue).
         qc.invalidateQueries({ queryKey: ["accounts"] });
         qc.invalidateQueries({ queryKey: ["holdings"] });
         await new Promise((r) => setTimeout(r, 8_000));
@@ -233,9 +276,14 @@ export function ConnectButton() {
           errors: final.errors,
           fully_succeeded: final.fully_succeeded,
         });
+        if (firstConnect) {
+          setOverlaySteps({
+            accounts: { state: "done", count: final.accounts ?? 0 },
+            holdings: { state: "done", count: final.holdings ?? 0 },
+            transactions: { state: "done", count: final.transactions ?? 0 },
+          });
+        }
       } else {
-        // Either we got transactions on the first call, or this isn't
-        // a first connect — show what we got and stop.
         setSyncResult({
           ok: true,
           accounts: out.accounts ?? 0,
@@ -248,13 +296,30 @@ export function ConnectButton() {
           errors: out.errors,
           fully_succeeded: out.fully_succeeded,
         });
+        if (firstConnect) {
+          setOverlaySteps((prev) => ({
+            ...prev,
+            transactions: { state: "done", count: out.transactions ?? 0 },
+          }));
+        }
+      }
+
+      if (firstConnect) {
+        setOverlayReady(true);
+        stopOverlayTimer();
       }
     } catch (err) {
-      // The endpoint itself throwing is now rare — every per-call
-      // failure is wrapped on the backend. This branch is for true
-      // outages (backend down, network error, JSON parse failure).
       console.error("sync endpoint unreachable", err);
       setSyncResult({ ok: false, message: (err as Error).message });
+      if (firstConnect) {
+        setOverlaySteps((prev) => ({
+          accounts: prev.accounts.state === "done" ? prev.accounts : { state: "error" },
+          holdings: prev.holdings.state === "done" ? prev.holdings : { state: "error" },
+          transactions: { state: "error" },
+        }));
+        setOverlayReady(true);
+        stopOverlayTimer();
+      }
     }
     qc.invalidateQueries();
   }
@@ -449,6 +514,17 @@ export function ConnectButton() {
           }
           syncFiredRef.current = false;
           setSnapLoginLink(null);
+        }}
+      />
+
+      <PostConnectSyncOverlay
+        open={overlayOpen}
+        steps={overlaySteps}
+        elapsedSeconds={overlayElapsed}
+        ready={overlayReady}
+        onClose={() => {
+          setOverlayOpen(false);
+          stopOverlayTimer();
         }}
       />
     </div>
