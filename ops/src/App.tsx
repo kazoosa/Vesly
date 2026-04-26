@@ -1,11 +1,17 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Icon } from "./components/Icon";
-import { KpiGrid } from "./components/KpiGrid";
+import { KpiCard, KpiUnconfigured } from "./components/KpiCard";
 import { StatusBanner } from "./components/StatusBanner";
 import { InfraCard } from "./components/InfraCard";
 import { ActivityCard } from "./components/ActivityCard";
 import { SelfTestCard } from "./components/SelfTestCard";
 import { BeaconMark } from "./components/BeaconMark";
+import {
+  DashboardLayoutGrid,
+  rectSortingStrategy,
+  type SectionDef,
+  type WidgetDef,
+} from "./components/DashboardLayout";
 
 type OpsPayload = {
   ok: boolean;
@@ -78,6 +84,7 @@ export function App() {
   });
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [lastFetched, setLastFetched] = useState<Date | null>(() => {
     try {
       const cached = localStorage.getItem(CACHE_KEY);
@@ -202,6 +209,33 @@ export function App() {
     ? rollUpStatus(s)
     : "unconfigured";
 
+  // Build the draggable sections (Business + Health). Other sections
+  // stay as fixed inline renders below — the brief explicitly only
+  // calls these two out as customizable.
+  const dndSections = useMemo<SectionDef[]>(() => {
+    if (!s) return [];
+    return [
+      {
+        id: "business",
+        title: "Business",
+        subtitle: "Your numbers, live from the database",
+        icon: <Icon.TrendUp />,
+        gridClass: "kpi-grid",
+        strategy: rectSortingStrategy,
+        widgets: businessWidgets(s.business),
+      },
+      {
+        id: "health",
+        title: "Health",
+        subtitle: "Is everything running right now",
+        icon: <Icon.Activity />,
+        gridClass: "grid-3",
+        strategy: rectSortingStrategy,
+        widgets: healthWidgets(s),
+      },
+    ];
+  }, [s]);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -228,6 +262,13 @@ export function App() {
           >
             {theme === "dark" ? <Icon.Sun /> : <Icon.Moon />}
           </button>
+          <button
+            className={`btn ${editing ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setEditing((e) => !e)}
+            title={editing ? "Exit edit mode" : "Customize the layout"}
+          >
+            {editing ? "Done" : <><Icon.Edit /> Edit</>}
+          </button>
           <button className="icon-btn" onClick={fetchOps} disabled={loading} title="Refresh">
             <Icon.RefreshCw className={loading ? "spin" : ""} />
           </button>
@@ -245,66 +286,7 @@ export function App() {
         <>
           <StatusBanner status={overallStatus} services={s} />
 
-          <SectionHeader icon={<Icon.TrendUp />} title="Business" subtitle="Your numbers, live from the database" />
-          <KpiGrid business={s.business} />
-
-          <SectionHeader icon={<Icon.Activity />} title="Health" subtitle="Is everything running right now" />
-          <div className="grid-3">
-            <InfraCard
-              icon={<Icon.Globe />}
-              title="Beacon App"
-              subtitle="Users can sign in and use it"
-              status={s.health?.status}
-              hero={
-                s.health?.data?.latencyMs
-                  ? `${s.health.data.latencyMs} ms`
-                  : s.health?.data?.ok
-                    ? "Healthy"
-                    : "Down"
-              }
-              heroSub={`${speedLabel(s.health?.data?.latencyMs as number | undefined)} response`}
-              metrics={[
-                {
-                  label: "Environment",
-                  value: String(s.health?.data?.environment ?? "—"),
-                },
-              ]}
-              link="https://stats.uptimerobot.com/yo9bjqio7P"
-              linkLabel="Uptime history"
-            />
-
-            <InfraCard
-              icon={<Icon.Server />}
-              title="Backend server"
-              subtitle="Login, data, brokerage sync"
-              status={s.render?.status}
-              hero={String(s.render?.data?.["last deploy"] ?? renderHero(s.render))}
-              heroSub={
-                String(s.render?.data?.["last change"] ?? "")
-                || `${renderHero(s.render).toLowerCase()} on Render`
-              }
-              metrics={[
-                {
-                  label: "Region",
-                  value: String(s.render?.data?.region ?? "—"),
-                },
-              ]}
-              link="https://dashboard.render.com"
-              linkLabel="Render"
-            />
-
-            <InfraCard
-              icon={<Icon.Globe />}
-              title="Websites"
-              subtitle="What your users see"
-              status={s.vercel?.status}
-              hero={vercelHero(s.vercel)}
-              heroSub="Last deploy synced"
-              metrics={vercelMetrics(s.vercel)}
-              link="https://vercel.com/dashboard"
-              linkLabel="Vercel"
-            />
-          </div>
+          <DashboardLayoutGrid sections={dndSections} editing={editing} />
 
           <SectionHeader icon={<Icon.Zap />} title="Free tier usage" subtitle="How close you are to limits" />
           <div className="grid-2">
@@ -579,4 +561,152 @@ function bytesH(n: unknown): string {
   if (v < 1024 ** 2) return `${(v / 1024).toFixed(1)} KB`;
   if (v < 1024 ** 3) return `${(v / 1024 ** 2).toFixed(1)} MB`;
   return `${(v / 1024 ** 3).toFixed(2)} GB`;
+}
+
+/* ─────────────── widget definitions for DashboardLayoutGrid ─────────────── */
+
+function businessWidgets(business: ServiceData | undefined): WidgetDef[] {
+  if (!business || business.status === "unconfigured") {
+    // Single-tile fallback. Spans the full row via .kpi-card.unconfigured.
+    return [
+      {
+        id: "kpi.unconfigured",
+        label: "Unconfigured user metrics",
+        render: () => <KpiUnconfigured message={business?.message} />,
+      },
+    ];
+  }
+  const d = business.data ?? {};
+  const total = Number(d.totalUsers ?? 0);
+  const today = Number(d.todaySignups ?? 0);
+  const week = Number(d.weekSignups ?? 0);
+  const items = Number(d.items ?? 0);
+  const holdings = Number(d.holdings ?? 0);
+  return [
+    {
+      id: "kpi.totalUsers",
+      label: "Total users",
+      render: () => (
+        <KpiCard
+          label="Total users"
+          value={total.toLocaleString()}
+          icon={<Icon.Users />}
+          trend={week > 0 ? `+${week} this week` : undefined}
+          tone="primary"
+        />
+      ),
+    },
+    {
+      id: "kpi.todaySignups",
+      label: "Today's signups",
+      render: () => (
+        <KpiCard
+          label="Today's signups"
+          value={today.toLocaleString()}
+          icon={<Icon.TrendUp />}
+          trend={today > 0 ? "Good day" : "Quiet so far"}
+          tone={today > 0 ? "positive" : "muted"}
+        />
+      ),
+    },
+    {
+      id: "kpi.connectedBrokerages",
+      label: "Connected brokerages",
+      render: () => (
+        <KpiCard
+          label="Connected brokerages"
+          value={items.toLocaleString()}
+          icon={<Icon.Briefcase />}
+          trend={total > 0 ? `${(items / total).toFixed(1)} per user avg` : undefined}
+        />
+      ),
+    },
+    {
+      id: "kpi.totalHoldings",
+      label: "Total holdings tracked",
+      render: () => (
+        <KpiCard
+          label="Total holdings tracked"
+          value={holdings.toLocaleString()}
+          icon={<Icon.Layers />}
+          trend={total > 0 ? `${(holdings / total).toFixed(0)} per user avg` : undefined}
+        />
+      ),
+    },
+  ];
+}
+
+function healthWidgets(s: NonNullable<OpsPayload["services"]>): WidgetDef[] {
+  return [
+    {
+      id: "health.app",
+      label: "Beacon App",
+      render: () => (
+        <InfraCard
+          icon={<Icon.Globe />}
+          title="Beacon App"
+          subtitle="Users can sign in and use it"
+          status={s.health?.status}
+          hero={
+            s.health?.data?.latencyMs
+              ? `${s.health.data.latencyMs} ms`
+              : s.health?.data?.ok
+                ? "Healthy"
+                : "Down"
+          }
+          heroSub={`${speedLabel(s.health?.data?.latencyMs as number | undefined)} response`}
+          metrics={[
+            {
+              label: "Environment",
+              value: String(s.health?.data?.environment ?? "—"),
+            },
+          ]}
+          link="https://stats.uptimerobot.com/yo9bjqio7P"
+          linkLabel="Uptime history"
+        />
+      ),
+    },
+    {
+      id: "health.backend",
+      label: "Backend server",
+      render: () => (
+        <InfraCard
+          icon={<Icon.Server />}
+          title="Backend server"
+          subtitle="Login, data, brokerage sync"
+          status={s.render?.status}
+          hero={String(s.render?.data?.["last deploy"] ?? renderHero(s.render))}
+          heroSub={
+            String(s.render?.data?.["last change"] ?? "")
+            || `${renderHero(s.render).toLowerCase()} on Render`
+          }
+          metrics={[
+            {
+              label: "Region",
+              value: String(s.render?.data?.region ?? "—"),
+            },
+          ]}
+          link="https://dashboard.render.com"
+          linkLabel="Render"
+        />
+      ),
+    },
+    {
+      id: "health.websites",
+      label: "Websites",
+      render: () => (
+        <InfraCard
+          icon={<Icon.Globe />}
+          title="Websites"
+          subtitle="What your users see"
+          status={s.vercel?.status}
+          hero={vercelHero(s.vercel)}
+          heroSub="Last deploy synced"
+          metrics={vercelMetrics(s.vercel)}
+          link="https://vercel.com/dashboard"
+          linkLabel="Vercel"
+        />
+      ),
+    },
+  ];
 }

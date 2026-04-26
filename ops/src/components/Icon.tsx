@@ -151,4 +151,26 @@ export const Icon = {
       <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
     </svg>
   ),
+  GripVertical: (p: React.SVGProps<SVGSVGElement>) => (
+    <svg {...base} {...p}>
+      <circle cx="9" cy="6" r="1.2" fill="currentColor" />
+      <circle cx="9" cy="12" r="1.2" fill="currentColor" />
+      <circle cx="9" cy="18" r="1.2" fill="currentColor" />
+      <circle cx="15" cy="6" r="1.2" fill="currentColor" />
+      <circle cx="15" cy="12" r="1.2" fill="currentColor" />
+      <circle cx="15" cy="18" r="1.2" fill="currentColor" />
+    </svg>
+  ),
+  Plus: (p: React.SVGProps<SVGSVGElement>) => (
+    <svg {...base} {...p}>
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  ),
+  Edit: (p: React.SVGProps<SVGSVGElement>) => (
+    <svg {...base} {...p}>
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  ),
 };

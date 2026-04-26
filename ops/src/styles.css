@@ -180,6 +180,101 @@ svg { display: block; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
+/* ─────────────── Drag-and-drop edit mode ─────────────── */
+
+.dnd-section {
+  margin-bottom: 8px;
+}
+.dnd-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dnd-section-handle {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: grab;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dnd-section-handle:active { cursor: grabbing; }
+.dnd-section-handle:hover { color: var(--fg); border-color: var(--brand); }
+.dnd-section-handle svg { width: 16px; height: 16px; }
+
+.dnd-widget {
+  position: relative;
+}
+.dnd-widget > .kpi-card,
+.dnd-widget > .infra-card {
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+.dnd-widget-controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  z-index: 2;
+}
+.dnd-handle, .dnd-remove {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+.dnd-handle { cursor: grab; }
+.dnd-handle:active { cursor: grabbing; }
+.dnd-handle:hover, .dnd-remove:hover { color: var(--fg); border-color: var(--border-strong); }
+.dnd-remove:hover { color: var(--red); border-color: var(--red); }
+.dnd-handle svg { width: 14px; height: 14px; }
+
+.add-widget-panel {
+  margin-top: 24px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.add-widget-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+  margin-bottom: 8px;
+}
+.add-widget-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.add-widget-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.add-widget-btn svg { width: 12px; height: 12px; }
+.add-widget-btn:hover { color: var(--fg); border-color: var(--brand); }
+
 /* ─────────────── First-load skeletons ─────────────── */
 .first-load-skel { display: flex; flex-direction: column; gap: 14px; }
 .skel {
