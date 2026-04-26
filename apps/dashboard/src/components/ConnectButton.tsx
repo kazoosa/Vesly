@@ -185,15 +185,21 @@ export function ConnectButton() {
     }
     try {
       let out = await runOneSync();
-      // Retry-once on cold-start lag. Only on first connects, only
-      // when we got 0 transactions back. Capped at one retry so the
-      // user never waits more than ~10s total.
-      if (
-        firstConnect &&
-        (out.transactions ?? 0) === 0 &&
-        (out.raw_activities ?? 0) === 0
-      ) {
-        await new Promise((r) => setTimeout(r, 5_000));
+      // Aggressive retry on cold-start lag. Only on first connects,
+      // only when we got 0 transactions AND 0 raw activities back
+      // (the cold-start signature — distinguishes from "user has no
+      // history" which still returns the activity rows we asked for).
+      // Three attempts total at 0s + 5s + 15s ≈ 20s wall time worst
+      // case. After that we trust the result and stop hammering
+      // SnapTrade's API.
+      const RETRY_DELAYS_MS = [5_000, 15_000];
+      for (const delay of RETRY_DELAYS_MS) {
+        const empty =
+          firstConnect &&
+          (out.transactions ?? 0) === 0 &&
+          (out.raw_activities ?? 0) === 0;
+        if (!empty) break;
+        await new Promise((r) => setTimeout(r, delay));
         out = await runOneSync();
       }
       setSyncResult({
