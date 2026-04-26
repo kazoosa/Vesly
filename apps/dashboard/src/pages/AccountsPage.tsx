@@ -40,13 +40,28 @@ export function AccountsPage() {
   const dismissTimerRef = useRef<number | null>(null);
 
   const disconnect = useMutation({
-    mutationFn: (itemId: string) => {
+    mutationFn: (itemId: string) =>
+      f(`/api/portfolio/accounts/${itemId}`, { method: "DELETE" }),
+    // Optimistically drop the brokerage from the cached accounts list
+    // the moment the user clicks Disconnect — no waiting for the
+    // network round-trip. If the DELETE fails, onError restores the
+    // snapshot we captured here.
+    onMutate: async (itemId) => {
       setPendingItemId(itemId);
-      return f(`/api/portfolio/accounts/${itemId}`, { method: "DELETE" });
+      await qc.cancelQueries({ queryKey: ["accounts"] });
+      const prev = qc.getQueryData<{ accounts: Account[] }>(["accounts"]);
+      qc.setQueryData<{ accounts: Account[] }>(["accounts"], (old) =>
+        old
+          ? { accounts: old.accounts.filter((a) => a.item_id !== itemId) }
+          : old,
+      );
+      return { prev, itemId };
     },
     onSuccess: (_data, itemId) => {
       setPendingItemId(null);
       setJustDisconnectedItemId(itemId);
+      // Network call succeeded — invalidate so any other queries
+      // that reference this brokerage get fresh data.
       qc.invalidateQueries();
       if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = window.setTimeout(
@@ -54,7 +69,13 @@ export function AccountsPage() {
         3000,
       );
     },
-    onError: () => setPendingItemId(null),
+    onError: (_err, _vars, ctx) => {
+      setPendingItemId(null);
+      // Restore the brokerage in the UI if the server rejected the
+      // delete; otherwise the user thinks it's gone but a refresh
+      // brings it back.
+      if (ctx?.prev) qc.setQueryData(["accounts"], ctx.prev);
+    },
   });
 
   useEffect(() => {
