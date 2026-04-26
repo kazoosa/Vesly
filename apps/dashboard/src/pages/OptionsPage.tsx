@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
@@ -66,6 +66,10 @@ export function OptionsPage() {
   const f = apiFetch(() => accessToken);
   const to = useTo();
   const [layout, setLayout] = useState<Layout>("expiry");
+  // Default to whichever tab has data so the user lands somewhere
+  // useful. If both are empty (and we're past the early-return below
+  // for "truly nothing"), default to open so the user sees the
+  // explanatory copy.
   const [tab, setTab] = useState<Tab>("open");
 
   const q = useQuery({
@@ -135,6 +139,20 @@ export function OptionsPage() {
       })
       .sort((a, b) => b.closed.localeCompare(a.closed));
   }, [txQ.data, openTickers]);
+
+  // First-load tab heuristic: if Open is empty but Closed has data,
+  // start the user on Closed so they don't land on a blank pane.
+  // After they manually switch, respect their choice — the ref tracks
+  // whether we've already auto-selected once.
+  const autoTabbedRef = useRef(false);
+  useEffect(() => {
+    if (autoTabbedRef.current) return;
+    if (q.isLoading || txQ.isLoading) return;
+    if (options.length === 0 && closedContracts.length > 0) {
+      setTab("closed");
+    }
+    autoTabbedRef.current = true;
+  }, [options.length, closedContracts.length, q.isLoading, txQ.isLoading]);
 
   const groupedByExpiry = useMemo(() => {
     const map = new Map<string, typeof options>();
