@@ -13,17 +13,28 @@
     />
     <script>
       // Apply theme before React mounts to avoid flash-of-wrong-theme.
+      // Five themes; "beacon-ops-theme" is the new key, "beacon_ops_theme"
+      // is the legacy binary one we still honour as a migration.
       (function () {
+        var KNOWN = ["light", "dark", "midnight", "solarized", "high-contrast"];
         try {
-          var s = localStorage.getItem("beacon_ops_theme");
-          var resolved = s === "light" || s === "dark"
-            ? s
-            : window.matchMedia("(prefers-color-scheme: dark)").matches
-              ? "dark"
-              : "light";
-          document.documentElement.classList.toggle("dark", resolved === "dark");
+          var s = localStorage.getItem("beacon-ops-theme");
+          if (KNOWN.indexOf(s) === -1) {
+            var legacy = localStorage.getItem("beacon_ops_theme");
+            s =
+              legacy === "dark"
+                ? "dark"
+                : legacy === "light"
+                  ? "light"
+                  : window.matchMedia("(prefers-color-scheme: dark)").matches
+                    ? "dark"
+                    : "light";
+          }
+          var html = document.documentElement;
+          html.setAttribute("data-theme", s);
+          if (s === "dark" || s === "midnight") html.classList.add("dark");
         } catch (e) {
-          document.documentElement.classList.add("dark");
+          document.documentElement.setAttribute("data-theme", "light");
         }
       })();
     </script>

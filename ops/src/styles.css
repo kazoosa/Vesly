@@ -1,5 +1,16 @@
-/* Light theme (default) */
-:root {
+/* ─────────────── Theme system ───────────────
+ * Themes are selected via the `data-theme` attribute on <html>.
+ * Light is the default; the value is persisted to localStorage
+ * under "beacon-ops-theme" and applied before first paint by an
+ * inline script in index.html.
+ *
+ * Each theme is a self-contained block of CSS custom properties.
+ * Components reference --bg / --fg / --card / etc, never hex —
+ * adding a theme means adding a new block, nothing else.
+ */
+
+:root,
+html[data-theme="light"] {
   --bg: #fafafc;
   --bg-elevated: #ffffff;
   --card: #ffffff;
@@ -24,7 +35,7 @@
   color-scheme: light;
 }
 
-/* Dark theme */
+html[data-theme="dark"],
 html.dark {
   --bg: #07070b;
   --bg-elevated: #0d0d14;
@@ -45,6 +56,75 @@ html.dark {
   --shadow-card: none;
   --shadow-elevated: 0 20px 50px -20px rgba(0, 0, 0, 0.7);
   color-scheme: dark;
+}
+
+/* Midnight — deep navy, electric cyan accents, the "ops terminal" feel */
+html[data-theme="midnight"] {
+  --bg: #050816;
+  --bg-elevated: #0a1024;
+  --card: #0f172e;
+  --card-2: #15203c;
+  --border: rgba(56, 189, 248, 0.10);
+  --border-strong: rgba(56, 189, 248, 0.22);
+  --fg: #e2f1ff;
+  --fg-2: #a8c5e6;
+  --fg-muted: #6f88aa;
+  --fg-fainter: #3d5170;
+  --green: #4ade80;
+  --red: #f87171;
+  --amber: #fbbf24;
+  --blue: #38bdf8;
+  --purple: #a78bfa;
+  --brand: #22d3ee;
+  --shadow-card: 0 0 0 1px rgba(56, 189, 248, 0.04);
+  --shadow-elevated: 0 20px 50px -20px rgba(8, 47, 73, 0.7);
+  color-scheme: dark;
+}
+
+/* Solarized — warm amber/cream, muted green/yellow accents */
+html[data-theme="solarized"] {
+  --bg: #fdf6e3;
+  --bg-elevated: #f5efdc;
+  --card: #fbf3df;
+  --card-2: #efe8d2;
+  --border: rgba(101, 123, 131, 0.16);
+  --border-strong: rgba(101, 123, 131, 0.28);
+  --fg: #586e75;
+  --fg-2: #657b83;
+  --fg-muted: #93a1a1;
+  --fg-fainter: #b8c0c0;
+  --green: #859900;
+  --red: #dc322f;
+  --amber: #b58900;
+  --blue: #268bd2;
+  --purple: #6c71c4;
+  --brand: #cb4b16;
+  --shadow-card: 0 1px 2px rgba(101, 123, 131, 0.06), 0 8px 24px -12px rgba(101, 123, 131, 0.16);
+  --shadow-elevated: 0 2px 4px rgba(101, 123, 131, 0.08), 0 20px 40px -16px rgba(101, 123, 131, 0.22);
+  color-scheme: light;
+}
+
+/* High contrast — stark black-on-white for accessibility */
+html[data-theme="high-contrast"] {
+  --bg: #ffffff;
+  --bg-elevated: #ffffff;
+  --card: #ffffff;
+  --card-2: #f0f0f0;
+  --border: #000000;
+  --border-strong: #000000;
+  --fg: #000000;
+  --fg-2: #000000;
+  --fg-muted: #333333;
+  --fg-fainter: #555555;
+  --green: #006400;
+  --red: #b00000;
+  --amber: #a05a00;
+  --blue: #0000cc;
+  --purple: #5d00b3;
+  --brand: #000000;
+  --shadow-card: 0 0 0 1px #000000;
+  --shadow-elevated: 0 0 0 2px #000000;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -179,6 +259,75 @@ svg { display: block; }
 
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
+/* ─────────────── Theme picker ─────────────── */
+
+.theme-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 280px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 8px;
+  box-shadow: var(--shadow-elevated);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.theme-popover-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+  padding: 4px 8px 6px;
+}
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg);
+  transition: background 100ms ease, border-color 100ms ease;
+}
+.theme-option:hover { background: var(--card-2); }
+.theme-option.active {
+  background: var(--card-2);
+  border-color: var(--border-strong);
+}
+.theme-swatch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  flex-shrink: 0;
+}
+.theme-swatch span { display: block; width: 100%; height: 100%; }
+.theme-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.theme-name { font-size: 13px; font-weight: 500; color: var(--fg); }
+.theme-desc { font-size: 11px; color: var(--fg-muted); }
+.theme-check {
+  flex-shrink: 0;
+  color: var(--brand);
+}
+.theme-check svg { width: 14px; height: 14px; }
 
 /* ─────────────── Drag-and-drop edit mode ─────────────── */
 
