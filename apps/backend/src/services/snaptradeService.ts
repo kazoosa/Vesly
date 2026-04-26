@@ -567,32 +567,64 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       const today = new Date();
       const startDate = new Date(today);
       startDate.setFullYear(today.getFullYear() - years);
-      const actCallRes = await safeCall(
-        "transactionsAndReporting.getActivities",
-        { developerId: developer.id, accountId: accId, userSecret, startDate, endDate: today },
-        () =>
-          st.transactionsAndReporting.getActivities({
-            userId,
-            userSecret,
-            startDate: startDate.toISOString().slice(0, 10),
-            endDate: today.toISOString().slice(0, 10),
-          }),
-      );
 
-      if (!actCallRes.ok) {
+      // Retry-on-empty for activities. Reproducible pattern from one
+      // user: connect Robinhood -> sync returns 0 transactions ->
+      // refresh -> 0 -> refresh again -> 942. SnapTrade appears to
+      // serve from a cold cache on the first call after a connection
+      // (or after their internal cache expires), then warms up. To
+      // avoid the user having to learn "press Refresh twice", we
+      // retry server-side: if totalReturned is 0, wait and try again.
+      // Backoff is 4s + 10s = ~14s worst-case extra wait, only on
+      // accounts that legitimately appear empty. Real accounts with
+      // history return on the first attempt and incur zero penalty.
+      const ACTIVITY_RETRY_DELAYS_MS = [4_000, 10_000];
+      let allActivities: Array<Record<string, unknown>> = [];
+      let actCallRes: Awaited<ReturnType<typeof safeCall>> | null = null;
+      let activitiesAttempt = 0;
+      for (
+        activitiesAttempt = 0;
+        activitiesAttempt <= ACTIVITY_RETRY_DELAYS_MS.length;
+        activitiesAttempt++
+      ) {
+        if (activitiesAttempt > 0) {
+          const delay = ACTIVITY_RETRY_DELAYS_MS[activitiesAttempt - 1]!;
+          logger.info(
+            { accountId: accId, attempt: activitiesAttempt + 1, delayMs: delay },
+            "snaptrade activities retry — previous response was empty",
+          );
+          await new Promise((r) => setTimeout(r, delay));
+        }
+        actCallRes = await safeCall(
+          "transactionsAndReporting.getActivities",
+          { developerId: developer.id, accountId: accId, userSecret, startDate, endDate: today, attempt: activitiesAttempt + 1 },
+          () =>
+            st.transactionsAndReporting.getActivities({
+              userId,
+              userSecret,
+              startDate: startDate.toISOString().slice(0, 10),
+              endDate: today.toISOString().slice(0, 10),
+            }),
+        );
+        if (!actCallRes.ok) break;
+        const respData = (actCallRes.data as { data?: unknown }).data;
+        allActivities = (respData as Array<Record<string, unknown>>) ?? [];
+        if (allActivities.length > 0) break;
+        // else: empty — loop and retry if we have attempts left
+      }
+
+      if (!actCallRes!.ok) {
         errors.push({
           step: "activities",
           accountId: accId,
-          message: actCallRes.error,
-          status: actCallRes.status,
+          message: actCallRes!.error,
+          status: actCallRes!.status,
         });
         // Move to the next account — positions/options for THIS account
         // already wrote, and the next account's data is independent.
         continue;
       }
 
-      const allActivities =
-        (actCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
       // Client-side filter to this account, since we dropped the server filter.
       const activities = allActivities.filter((a) => {
         const acctRef = a.account as { id?: string } | string | undefined;
@@ -601,7 +633,12 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       });
       rawActivitiesFetched += activities.length;
       logger.info(
-        { accountId: accId, activityCount: activities.length, totalReturned: allActivities.length },
+        {
+          accountId: accId,
+          activityCount: activities.length,
+          totalReturned: allActivities.length,
+          attempts: activitiesAttempt + 1,
+        },
         "snaptrade activities fetched",
       );
 
