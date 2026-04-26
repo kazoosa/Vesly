@@ -47,8 +47,14 @@ describe("transactions sync", () => {
     let cursor: string | undefined;
     let pages = 0;
     while (pages < 20) {
+      // Build the query string with count always present and cursor
+      // optional. The previous form was `?cursor=…&count=10` when
+      // cursor existed and `&count=10` when it didn't — the second
+      // shape produces the literal path `/sync&count=10` which 404s.
+      const params = new URLSearchParams({ count: "10" });
+      if (cursor) params.set("cursor", cursor);
       const res = await request(app)
-        .get(`/api/transactions/sync${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}&count=10`)
+        .get(`/api/transactions/sync?${params.toString()}`)
         .set("Authorization", `Bearer ${accessToken}`);
       expect(res.status).toBe(200);
       for (const tx of res.body.added) seen.add(tx.transaction_id);
