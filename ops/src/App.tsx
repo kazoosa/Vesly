@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./components/Icon";
 import { KpiCard, KpiUnconfigured } from "./components/KpiCard";
 import { StatusBanner } from "./components/StatusBanner";
@@ -38,22 +38,75 @@ type ServiceData = {
 };
 
 const AUTH_KEY = "beacon_ops_auth";
-const THEME_KEY = "beacon_ops_theme";
+const THEME_KEY = "beacon-ops-theme";
 const CACHE_KEY = "beacon_ops_data";
 const CACHE_TTL_MS = 5 * 60_000; // serve cached payload up to 5 min old on mount
 const REFRESH_MS = 30_000;
 
-function getInitialTheme(): "light" | "dark" {
-  if (typeof window === "undefined") return "dark";
+type ThemeId = "light" | "dark" | "midnight" | "solarized" | "high-contrast";
+
+const THEMES: Array<{
+  id: ThemeId;
+  label: string;
+  description: string;
+  swatch: { bg: string; card: string; fg: string; accent: string };
+}> = [
+  {
+    id: "light",
+    label: "Light",
+    description: "Clean default. Same as the Beacon app dashboard.",
+    swatch: { bg: "#fafafc", card: "#ffffff", fg: "#11111b", accent: "#7c6aff" },
+  },
+  {
+    id: "dark",
+    label: "Dark",
+    description: "Soft dark — easier on the eyes after sundown.",
+    swatch: { bg: "#07070b", card: "#111119", fg: "#f5f7fc", accent: "#7c6aff" },
+  },
+  {
+    id: "midnight",
+    label: "Midnight",
+    description: "Deep navy with electric cyan accents. Real ops terminal feel.",
+    swatch: { bg: "#050816", card: "#0f172e", fg: "#e2f1ff", accent: "#22d3ee" },
+  },
+  {
+    id: "solarized",
+    label: "Solarized",
+    description: "Warm cream and muted accents. Long-session friendly.",
+    swatch: { bg: "#fdf6e3", card: "#fbf3df", fg: "#586e75", accent: "#cb4b16" },
+  },
+  {
+    id: "high-contrast",
+    label: "High contrast",
+    description: "Stark black and white. Maximum legibility.",
+    swatch: { bg: "#ffffff", card: "#ffffff", fg: "#000000", accent: "#000000" },
+  },
+];
+
+function isThemeId(v: unknown): v is ThemeId {
+  return typeof v === "string" && THEMES.some((t) => t.id === v);
+}
+
+function getInitialTheme(): ThemeId {
+  if (typeof window === "undefined") return "light";
   const saved = localStorage.getItem(THEME_KEY);
-  if (saved === "light" || saved === "dark") return saved;
+  if (isThemeId(saved)) return saved;
+  // Migrate the old "beacon_ops_theme" key (which only stored
+  // "light" or "dark") if it's still around.
+  const legacy = localStorage.getItem("beacon_ops_theme");
+  if (legacy === "dark") return "dark";
+  if (legacy === "light") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
     : "light";
 }
 
-function applyTheme(theme: "light" | "dark") {
-  document.documentElement.classList.toggle("dark", theme === "dark");
+function applyTheme(theme: ThemeId) {
+  const html = document.documentElement;
+  html.setAttribute("data-theme", theme);
+  // Keep the legacy `.dark` class in sync so any ancestor selector
+  // that hasn't been migrated still matches when a dark theme is on.
+  html.classList.toggle("dark", theme === "dark" || theme === "midnight");
 }
 
 export function App() {
@@ -95,16 +148,13 @@ export function App() {
       return null;
     }
   });
-  const [theme, setTheme] = useState<"light" | "dark">(() => getInitialTheme());
+  const [theme, setTheme] = useState<ThemeId>(() => getInitialTheme());
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
 
   useEffect(() => {
     applyTheme(theme);
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
-
-  function toggleTheme() {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
-  }
 
   const fetchOps = useCallback(async () => {
     if (!password) return;
@@ -281,14 +331,16 @@ export function App() {
               Updated {fmtRelative(lastFetched)}
             </span>
           )}
-          <button
-            className="icon-btn"
-            onClick={toggleTheme}
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            aria-label="Toggle theme"
-          >
-            {theme === "dark" ? <Icon.Sun /> : <Icon.Moon />}
-          </button>
+          <ThemePicker
+            current={theme}
+            open={themePickerOpen}
+            onToggle={() => setThemePickerOpen((v) => !v)}
+            onPick={(id) => {
+              setTheme(id);
+              setThemePickerOpen(false);
+            }}
+            onClose={() => setThemePickerOpen(false)}
+          />
           {editing ? (
             <button
               className="btn btn-primary"
@@ -484,6 +536,155 @@ function bytesH(n: unknown): string {
   return `${(v / 1024 ** 3).toFixed(2)} GB`;
 }
 
+/**
+ * Inline sparkline card for "New users (30d)". Avoids pulling in a
+ * chart lib for a single 30-point line — pure SVG path math.
+ */
+function SignupSparkCard({
+  total,
+  points,
+}: {
+  total: number;
+  points: Array<{ day: string; n: number }>;
+}) {
+  const max = Math.max(1, ...points.map((p) => p.n));
+  const w = 200;
+  const h = 40;
+  const stepX = points.length > 1 ? w / (points.length - 1) : 0;
+  const path = points
+    .map((p, i) => {
+      const x = i * stepX;
+      const y = h - (p.n / max) * h;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <div className="kpi-card">
+      <div className="kpi-top">
+        <span className="kpi-icon">
+          <Icon.TrendUp />
+        </span>
+        <span className="kpi-label">New users (30d)</span>
+      </div>
+      <div className="kpi-value">{total.toLocaleString()}</div>
+      {points.length > 0 ? (
+        <svg
+          width="100%"
+          viewBox={`0 0 ${w} ${h}`}
+          preserveAspectRatio="none"
+          style={{ marginTop: 8, height: 32 }}
+          aria-hidden
+        >
+          <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.85" />
+        </svg>
+      ) : (
+        <div className="kpi-trend">No data yet</div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────── Theme picker ─────────────── */
+
+function ThemePicker({
+  current,
+  open,
+  onToggle,
+  onPick,
+  onClose,
+}: {
+  current: ThemeId;
+  open: boolean;
+  onToggle: () => void;
+  onPick: (id: ThemeId) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  // Close on Escape and on outside click. Standard popover behavior.
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onClick);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onClick);
+    };
+  }, [open, onClose]);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        className="icon-btn"
+        onClick={onToggle}
+        title="Theme"
+        aria-label="Theme picker"
+        aria-expanded={open}
+      >
+        <PaletteIcon />
+      </button>
+      {open && (
+        <div className="theme-popover" role="menu">
+          <div className="theme-popover-title">Theme</div>
+          {THEMES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={t.id === current}
+              className={`theme-option ${t.id === current ? "active" : ""}`}
+              onClick={() => onPick(t.id)}
+            >
+              <span className="theme-swatch" aria-hidden>
+                <span style={{ background: t.swatch.bg }} />
+                <span style={{ background: t.swatch.card }} />
+                <span style={{ background: t.swatch.fg }} />
+                <span style={{ background: t.swatch.accent }} />
+              </span>
+              <span className="theme-meta">
+                <span className="theme-name">{t.label}</span>
+                <span className="theme-desc">{t.description}</span>
+              </span>
+              {t.id === current && (
+                <span className="theme-check" aria-hidden>
+                  <Icon.Check />
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaletteIcon() {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125 0-.937.748-1.688 1.689-1.688h1.996c3.082 0 5.542-2.493 5.542-5.62C22 6.667 17.522 2 12 2z" />
+    </svg>
+  );
+}
+
 /* ─────────────── widget definitions for DashboardLayoutGrid ─────────────── */
 
 function businessWidgets(business: ServiceData | undefined): WidgetDef[] {
@@ -553,6 +754,121 @@ function businessWidgets(business: ServiceData | undefined): WidgetDef[] {
           trend={total > 0 ? `${(holdings / total).toFixed(0)} per user avg` : undefined}
         />
       ),
+    },
+    // ───── Hidden-by-default extras (toggle on via Add widget panel)
+    {
+      id: "kpi.avgHoldings",
+      label: "Avg holdings per user",
+      defaultHidden: true,
+      render: () => (
+        <KpiCard
+          label="Avg holdings per user"
+          value={String(d.avgHoldingsPerUser ?? 0)}
+          icon={<Icon.Layers />}
+          trend={
+            holdings > 0 && total > 0
+              ? `${holdings.toLocaleString()} ÷ ${total.toLocaleString()}`
+              : "Need users + holdings"
+          }
+        />
+      ),
+    },
+    {
+      id: "kpi.activeUsers7d",
+      label: "Active users (7d)",
+      defaultHidden: true,
+      render: () => {
+        const n = Number(d.activeUsers7d ?? 0);
+        const pct = total > 0 ? Math.round((n / total) * 100) : 0;
+        return (
+          <KpiCard
+            label="Active users (7d)"
+            value={n.toLocaleString()}
+            icon={<Icon.Users />}
+            trend={total > 0 ? `${pct}% of all users` : undefined}
+            tone={pct >= 50 ? "positive" : "default"}
+          />
+        );
+      },
+    },
+    {
+      id: "kpi.syncSuccessRate",
+      label: "Sync success rate (24h)",
+      defaultHidden: true,
+      render: () => {
+        const pct = d.syncSuccessPct as number | null | undefined;
+        const totalSyncs = Number(d.syncTotal24h ?? 0);
+        const okSyncs = Number(d.syncOk24h ?? 0);
+        return (
+          <KpiCard
+            label="Sync success rate (24h)"
+            value={pct === null || pct === undefined ? "—" : `${pct}%`}
+            icon={<Icon.Activity />}
+            trend={
+              totalSyncs > 0
+                ? `${okSyncs} ok / ${totalSyncs} total`
+                : "No syncs in 24h"
+            }
+            tone={
+              pct === null || pct === undefined
+                ? "muted"
+                : pct >= 95
+                  ? "positive"
+                  : pct >= 80
+                    ? "default"
+                    : "muted"
+            }
+          />
+        );
+      },
+    },
+    {
+      id: "kpi.topBroker",
+      label: "Top broker",
+      defaultHidden: true,
+      render: () => (
+        <KpiCard
+          label="Top broker"
+          value={String(d.topBrokerName ?? "—")}
+          icon={<Icon.Briefcase />}
+          trend={
+            d.topBrokerCount
+              ? `${d.topBrokerCount} connection${d.topBrokerCount === 1 ? "" : "s"}`
+              : "No connections yet"
+          }
+        />
+      ),
+    },
+    {
+      id: "kpi.signupSparkline",
+      label: "New users (30d)",
+      defaultHidden: true,
+      render: () => {
+        const points =
+          (d.signupSparkline as Array<{ day: string; n: number }> | undefined) ??
+          [];
+        const total30 = points.reduce((sum, p) => sum + p.n, 0);
+        return (
+          <SignupSparkCard total={total30} points={points} />
+        );
+      },
+    },
+    {
+      id: "kpi.errorRate",
+      label: "Errors (1h)",
+      defaultHidden: true,
+      render: () => {
+        const n = Number(d.errorRate1h ?? 0);
+        return (
+          <KpiCard
+            label="Errors (1h)"
+            value={n.toLocaleString()}
+            icon={<Icon.AlertTriangle />}
+            trend={n === 0 ? "All clear" : "5xx responses"}
+            tone={n === 0 ? "positive" : "muted"}
+          />
+        );
+      },
     },
   ];
 }
@@ -762,6 +1078,43 @@ function healthWidgets(s: NonNullable<OpsPayload["services"]>): WidgetDef[] {
           linkLabel="Render"
         />
       ),
+    },
+    {
+      id: "health.dbhealth",
+      label: "Database health",
+      defaultHidden: true,
+      render: () => {
+        const dh = (s as Record<string, ServiceData | undefined>).dbhealth;
+        const ping = Number(dh?.data?.pingMs ?? 0);
+        const total = Number(dh?.data?.totalMs ?? 0);
+        return (
+          <InfraCard
+            icon={<Icon.Database />}
+            title="Database health"
+            subtitle="Live query latency from the ops endpoint"
+            status={dh?.status}
+            hero={dh?.data?.pingMs ? `${ping} ms ping` : "—"}
+            heroSub={
+              total
+                ? `${total} ms across 3 queries`
+                : "Connect a DB to populate"
+            }
+            metrics={[
+              {
+                label: "Public tables",
+                value: String(dh?.data?.publicTables ?? "—"),
+              },
+              {
+                label: "Biggest table",
+                value: String(dh?.data?.biggestTable ?? "—"),
+                sub: dh?.data?.biggestTableRows
+                  ? `${Number(dh.data.biggestTableRows).toLocaleString()} rows`
+                  : undefined,
+              },
+            ]}
+          />
+        );
+      },
     },
     {
       id: "health.websites",

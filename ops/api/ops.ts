@@ -67,6 +67,11 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
     itemsRow,
     holdingsRow,
     recentSignups,
+    monthSignupsByDay,
+    activeUsers7d,
+    topBroker,
+    syncErrorsLastHour,
+    syncRateRows,
   ] = (await Promise.all([
     sql`SELECT COUNT(*)::int AS n FROM "Developer"`,
     sql`SELECT COUNT(*)::int AS n FROM "Developer" WHERE "createdAt" >= NOW() - INTERVAL '1 day'`,
@@ -74,6 +79,64 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
     sql`SELECT COUNT(*)::int AS n FROM "Item" WHERE status = 'GOOD'`,
     sql`SELECT COUNT(*)::int AS n FROM "InvestmentHolding"`,
     sql`SELECT email, "createdAt" FROM "Developer" ORDER BY "createdAt" DESC LIMIT 5`,
+    // Per-day signup counts for the last 30 days — drives the
+    // sparkline widget. Always 30 rows, padded with zero where no
+    // signups happened that day.
+    sql`
+      WITH days AS (
+        SELECT generate_series(
+          (CURRENT_DATE - INTERVAL '29 days')::date,
+          CURRENT_DATE,
+          '1 day'::interval
+        )::date AS day
+      )
+      SELECT
+        days.day::text AS day,
+        COALESCE(COUNT(d.id), 0)::int AS n
+      FROM days
+      LEFT JOIN "Developer" d ON DATE(d."createdAt") = days.day
+      GROUP BY days.day
+      ORDER BY days.day ASC
+    `,
+    // "Active in last 7 days" — best proxy we have without a
+    // LoginEvent table is "an Item belonging to this developer
+    // had its updatedAt touch in the last 7 days" (sync writes).
+    sql`
+      SELECT COUNT(DISTINCT a."developerId")::int AS n
+      FROM "Application" a
+      INNER JOIN "Item" i ON i."applicationId" = a.id
+      WHERE i."updatedAt" >= NOW() - INTERVAL '7 days'
+    `,
+    // Top broker by connection count — institution is referenced by
+    // Item.institutionId. Display top one only.
+    sql`
+      SELECT inst.name AS name, COUNT(*)::int AS n
+      FROM "Item" i
+      INNER JOIN "Institution" inst ON inst.id = i."institutionId"
+      WHERE i.status = 'GOOD'
+      GROUP BY inst.name
+      ORDER BY n DESC
+      LIMIT 1
+    `,
+    // ApiLog rows with status >= 500 in the last hour. Will be 0
+    // if no errors logged or if ApiLog is empty.
+    sql`
+      SELECT COUNT(*)::int AS n
+      FROM "ApiLog"
+      WHERE "createdAt" >= NOW() - INTERVAL '1 hour'
+        AND "responseStatus" >= 500
+    `,
+    // Sync success rate over the last 24h — driven by ApiLog rows
+    // matching the SnapTrade sync route. Returns total + success
+    // count so the widget can show % and absolute counts.
+    sql`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE "responseStatus" < 400)::int AS ok
+      FROM "ApiLog"
+      WHERE "createdAt" >= NOW() - INTERVAL '1 day'
+        AND "endpoint" LIKE '%/snaptrade/sync%'
+    `,
   ])) as [
     Array<{ n: number }>,
     Array<{ n: number }>,
@@ -81,6 +144,11 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
     Array<{ n: number }>,
     Array<{ n: number }>,
     Array<{ email: string; createdAt: string }>,
+    Array<{ day: string; n: number }>,
+    Array<{ n: number }>,
+    Array<{ name: string; n: number }>,
+    Array<{ n: number }>,
+    Array<{ total: number; ok: number }>,
   ];
 
   const totalUsers = totalUsersRow[0]?.n ?? 0;
@@ -88,6 +156,14 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
   const weekSignups = weekSignupsRow[0]?.n ?? 0;
   const items = itemsRow[0]?.n ?? 0;
   const holdings = holdingsRow[0]?.n ?? 0;
+  const activeUsers = activeUsers7d[0]?.n ?? 0;
+  const topBrokerName = topBroker[0]?.name ?? null;
+  const topBrokerCount = topBroker[0]?.n ?? 0;
+  const errorRate1h = syncErrorsLastHour[0]?.n ?? 0;
+  const syncTotal24h = syncRateRows[0]?.total ?? 0;
+  const syncOk24h = syncRateRows[0]?.ok ?? 0;
+  const syncSuccessPct =
+    syncTotal24h > 0 ? +((syncOk24h / syncTotal24h) * 100).toFixed(1) : null;
 
   return {
     status: "ok",
@@ -98,6 +174,14 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
       items,
       holdings,
       avgHoldingsPerUser: totalUsers > 0 ? +(holdings / totalUsers).toFixed(1) : 0,
+      activeUsers7d: activeUsers,
+      topBrokerName,
+      topBrokerCount,
+      errorRate1h,
+      syncTotal24h,
+      syncOk24h,
+      syncSuccessPct,
+      signupSparkline: monthSignupsByDay,
       _recentSignups: recentSignups.map((r) => ({
         title: r.email,
         time: fmtTime(r.createdAt),
@@ -235,6 +319,48 @@ async function getNeon(): Promise<ServiceResult> {
       storageHuman: bytes(sizeBytes),
       computeHours: +computeCu.toFixed(3),
       pgVersion: String(p.pg_version ?? "—"),
+    },
+  };
+}
+
+async function getDbHealth(): Promise<ServiceResult> {
+  const url = process.env.DATABASE_URL;
+  if (!url) return unconfigured("DATABASE_URL not set");
+  const sql = neon(url);
+  // Three lightweight queries — pure timing exercise. NOT a load test;
+  // we just want a current latency number the user can sanity-check
+  // against historical norms. Run sequentially so the times are
+  // additive and don't share connection setup costs.
+  const t0 = Date.now();
+  await sql`SELECT 1`;
+  const t1 = Date.now();
+  const tableCount = (await sql`
+    SELECT COUNT(*)::int AS n
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+  `) as Array<{ n: number }>;
+  const t2 = Date.now();
+  const longestTable = (await sql`
+    SELECT relname, n_live_tup::bigint AS rows
+    FROM pg_stat_user_tables
+    ORDER BY n_live_tup DESC NULLS LAST
+    LIMIT 1
+  `) as Array<{ relname: string; rows: number }>;
+  const t3 = Date.now();
+  const pingMs = t1 - t0;
+  const totalMs = t3 - t0;
+  const status: Status =
+    pingMs > 500 ? "warn" : pingMs > 1500 ? "error" : "ok";
+  return {
+    status,
+    data: {
+      pingMs,
+      schemaQueryMs: t2 - t1,
+      statsQueryMs: t3 - t2,
+      totalMs,
+      publicTables: tableCount[0]?.n ?? 0,
+      biggestTable: longestTable[0]?.relname ?? null,
+      biggestTableRows: Number(longestTable[0]?.rows ?? 0),
     },
   };
 }
@@ -608,7 +734,7 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  const [business, render, vercel, neon, upstash, github, health, selftest] = await Promise.all([
+  const [business, render, vercel, neon, upstash, github, health, selftest, dbhealth] = await Promise.all([
     safe("business", getBusinessMetrics),
     safe("render", getRender),
     safe("vercel", getVercel),
@@ -617,13 +743,14 @@ export default async function handler(req: Request): Promise<Response> {
     safe("github", getGitHub),
     safe("health", getHealth),
     safe("selftest", getSelfTest),
+    safe("dbhealth", getDbHealth),
   ]);
 
   return new Response(
     JSON.stringify({
       ok: true,
       timestamp: new Date().toISOString(),
-      services: { business, render, vercel, neon, upstash, github, health, selftest },
+      services: { business, render, vercel, neon, upstash, github, health, selftest, dbhealth },
     }),
     {
       status: 200,

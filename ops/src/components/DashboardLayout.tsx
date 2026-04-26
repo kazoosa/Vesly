@@ -25,6 +25,11 @@ export interface WidgetDef {
   // Render fn produces the actual card. Receives `editing` so the card
   // can dim its content / hide live updates while the user rearranges.
   render: () => React.ReactNode;
+  // Hidden by default the very first time a user lands on the
+  // dashboard. They can add it via the Add Widget panel in edit
+  // mode. Once a user explicitly toggles a widget visible/hidden,
+  // their choice wins forever.
+  defaultHidden?: boolean;
 }
 
 export interface SectionDef {
@@ -94,13 +99,20 @@ function reconcile(
   sections: SectionDef[],
   saved: DashboardLayout | null,
 ): DashboardLayout {
+  const defaultHiddenIds = sections.flatMap((s) =>
+    s.widgets.filter((w) => w.defaultHidden).map((w) => w.id),
+  );
+  const defaultHiddenSet = new Set(defaultHiddenIds);
   const defaultLayout: DashboardLayout = {
     version: SCHEMA_VERSION,
     sectionOrder: sections.map((s) => s.id),
     widgetOrderBySection: Object.fromEntries(
-      sections.map((s) => [s.id, s.widgets.map((w) => w.id)]),
+      sections.map((s) => [
+        s.id,
+        s.widgets.filter((w) => !defaultHiddenSet.has(w.id)).map((w) => w.id),
+      ]),
     ),
-    hidden: [],
+    hidden: defaultHiddenIds,
   };
   if (!saved) return defaultLayout;
 
@@ -113,21 +125,29 @@ function reconcile(
   }
 
   const widgetOrderBySection: Record<string, string[]> = {};
+  // Hidden set carries forward, plus any new defaultHidden widgets the
+  // user has never seen before.
+  const newHidden = new Set(saved.hidden);
   for (const section of sections) {
     const knownWidgetIds = new Set(section.widgets.map((w) => w.id));
     const savedOrder = saved.widgetOrderBySection[section.id] ?? [];
     const order = savedOrder.filter((id) => knownWidgetIds.has(id));
     for (const w of section.widgets) {
       if (!order.includes(w.id) && !saved.hidden.includes(w.id)) {
-        order.push(w.id);
+        if (defaultHiddenSet.has(w.id)) {
+          newHidden.add(w.id);
+        } else {
+          order.push(w.id);
+        }
       }
     }
     widgetOrderBySection[section.id] = order;
   }
 
-  // Filter hidden to only widgets we still know about.
+  // Filter hidden to only widgets we still know about (plus any new
+  // defaultHidden ones added in this round).
   const allKnownWidgetIds = new Set(sections.flatMap((s) => s.widgets.map((w) => w.id)));
-  const hidden = saved.hidden.filter((id) => allKnownWidgetIds.has(id));
+  const hidden = [...newHidden].filter((id) => allKnownWidgetIds.has(id));
 
   return {
     version: SCHEMA_VERSION,
