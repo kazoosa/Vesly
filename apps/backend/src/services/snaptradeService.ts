@@ -462,9 +462,17 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         optionPositions =
           (optsCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
         optionsFetched += optionPositions.length;
+        // Per-position raw payload logged so we can verify field-by-field
+        // (strike, expiry, premium, P/L) against what the user sees in
+        // their broker UI. SnapTrade's response shape varies subtly per
+        // broker; this is the ground-truth check.
         logger.info(
-          { accountId: accId, optionsCount: optionPositions.length },
-          "snaptrade options holdings fetched",
+          {
+            accountId: accId,
+            optionsCount: optionPositions.length,
+            rawOptionsResponse: optionPositions,
+          },
+          "snaptrade options holdings fetched (with raw payload)",
         );
       } else {
         // Don't add to errors[] when the broker simply doesn't have
@@ -559,11 +567,13 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       //    return [] silently. Omitting the filter and pulling all
       //    activities for the user (we already iterate per-account, so
       //    we filter client-side via act.account.id) is more reliable.
-      //  * Multi-year first-time pulls have been observed to return [] for
-      //    Robinhood specifically; default the window to 1 year now and let
-      //    follow-up syncs extend it via SNAPTRADE_HISTORY_YEARS=5 if the
-      //    operator wants the full back-history.
-      const years = parseInt(process.env.SNAPTRADE_HISTORY_YEARS ?? "1", 10);
+      //  * Multi-year first-time pulls were historically observed to return
+      //    [] for Robinhood. The retry-on-empty in the connect flow now
+      //    handles that case (giving SnapTrade time to warm its cache),
+      //    so we default the window to 5 years to backfill the full
+      //    history users actually have. Override with SNAPTRADE_HISTORY_YEARS
+      //    if you need a wider or narrower window.
+      const years = parseInt(process.env.SNAPTRADE_HISTORY_YEARS ?? "5", 10);
       const today = new Date();
       const startDate = new Date(today);
       startDate.setFullYear(today.getFullYear() - years);
