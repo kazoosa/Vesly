@@ -88,7 +88,13 @@ export async function createItemFromSession(args: {
 }
 
 export async function deleteItem(itemId: string) {
-  await prisma.item.delete({ where: { id: itemId } });
+  // Idempotent: if the row is already gone (concurrent disconnect,
+  // cascade from elsewhere, or a frontend retry that landed after
+  // the first call already cleaned up), treat as success rather
+  // than throwing P2025 to the route handler. The user's intent —
+  // "this brokerage should be disconnected" — is satisfied either
+  // way; surfacing a 500 just makes the UI flicker.
+  await prisma.item.deleteMany({ where: { id: itemId } });
 }
 
 export async function updateItemWebhook(itemId: string, webhookUrl: string | null) {
