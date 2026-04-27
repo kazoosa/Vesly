@@ -462,7 +462,7 @@ export function ConnectButton() {
               <div className="mt-1">
                 {syncResult.accounts} account{syncResult.accounts === 1 ? "" : "s"},{" "}
                 {syncResult.holdings} holding{syncResult.holdings === 1 ? "" : "s"},{" "}
-                {syncResult.transactions} transaction{syncResult.transactions === 1 ? "" : "s"} pulled
+                {syncResult.transactions} transaction{syncResult.transactions === 1 ? "" : "s"} on record
                 {(syncResult.options_fetched ?? 0) > 0 && (
                   <>, {syncResult.options_fetched} option contract{syncResult.options_fetched === 1 ? "" : "s"}</>
                 )}

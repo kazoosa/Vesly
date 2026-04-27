@@ -103,6 +103,14 @@ const APP_ROUTES: Array<{ path: string; element: React.ReactNode }> = [
 ];
 
 export function App() {
+  // Wake Render the moment the app mounts, regardless of auth state.
+  // The first authenticated query after a cold-start hits a 3-5s
+  // delay otherwise — by the time the user types their password the
+  // backend is already warm. Hook is enabled unconditionally here;
+  // duplicate pings from RequireAuth's keep-alive are harmless (both
+  // hit the same /health endpoint) and there's no auth header
+  // required.
+  useKeepAlive(true);
   return (
     <ThemeProvider>
       <AuthProvider>

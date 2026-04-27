@@ -406,8 +406,16 @@ async function getDbHealth(): Promise<ServiceResult> {
   )) as Array<{ relname: string; rows: number }> | null;
   const t3 = Date.now();
   const totalMs = t3 - t0;
+  // Neon serverless wakes the compute on first query after idle —
+  // cold-start ping easily lands in 1500–3500ms range and recovers.
+  // Earlier thresholds (>1500=error, >500=warn) flagged that as a
+  // problem on every ops dashboard load, which is what the user was
+  // seeing as "Something is broken". Real failures already short-
+  // circuit above (pingErr returns status=error before this), so the
+  // tail-latency thresholds here only need to flag genuinely slow
+  // running queries. Tightened to: <2s green, 2-5s amber, >5s red.
   const status: Status =
-    pingMs > 1500 ? "error" : pingMs > 500 ? "warn" : "ok";
+    pingMs > 5000 ? "error" : pingMs > 2000 ? "warn" : "ok";
   return {
     status,
     data: {

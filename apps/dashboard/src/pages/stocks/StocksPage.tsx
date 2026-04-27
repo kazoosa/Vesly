@@ -143,10 +143,16 @@ export function StocksPage() {
         </aside>
       )}
       {listCollapsed && (
+        // Anchored to the right edge of the collapsed SessionNavBar (49px,
+        // see SIDEBAR_COLLAPSED_PX). Earlier this was `left-0` which put
+        // the toggle inside the sidebar's z-40 fixed bar, making it
+        // unreachable. z-50 ensures it floats above the sidebar's hover-
+        // expand layer too. On mobile (under md) the page sidebar is the
+        // drawer in Shell.tsx; this toggle is desktop-only.
         <button
           type="button"
           onClick={() => setListCollapsed(false)}
-          className="hidden md:flex fixed left-0 top-1/2 -translate-y-1/2 z-30 items-center gap-1 px-1.5 py-3 rounded-r-md border border-l-0 border-border-subtle bg-bg-elevated text-fg-secondary hover:text-fg-primary hover:bg-bg-hover transition-colors"
+          className="hidden md:flex fixed left-[49px] top-1/2 -translate-y-1/2 z-50 items-center gap-1 px-1.5 py-3 rounded-r-md border border-l-0 border-border-subtle bg-bg-elevated text-fg-secondary hover:text-fg-primary hover:bg-bg-hover transition-colors shadow-sm"
           title="Show symbol list"
           aria-label="Show symbol list"
         >

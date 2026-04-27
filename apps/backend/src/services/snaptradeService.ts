@@ -129,10 +129,12 @@ async function safeCall<T>(
     // 404 on optional endpoints (notably listOptionHoldings for
     // brokers that don't expose options data, like Robinhood for
     // certain account types) isn't a real failure — it's the broker
-    // saying "I don't have this data type for this account". Log
-    // those at warn so they don't pollute error dashboards. Real
-    // failures (5xx, 401/403, etc.) stay at error.
-    const logFn = status === 404 ? logger.warn : logger.error;
+    // saying "I don't have this data type for this account". Drop
+    // these to info so they don't pollute warn/error dashboards.
+    // The label is still in the log message so ops can grep when
+    // diagnosing a specific account's coverage. Real failures
+    // (5xx, 401/403, etc.) stay at error.
+    const logFn = status === 404 ? logger.info : logger.error;
     logFn(
       {
         snaptradeCall: label,
@@ -144,7 +146,7 @@ async function safeCall<T>(
         ...safeContext,
       },
       status === 404
-        ? `snaptrade: ${label} not available for this account (404)`
+        ? `snaptrade: ${label} not supported by this broker (404, not an error)`
         : `snaptrade: ${label} failed`,
     );
     return {
@@ -165,6 +167,14 @@ export interface SyncResult {
   connections: number;
   accounts: number;
   holdings: number;
+  /**
+   * Total InvestmentTransaction rows on record for this developer
+   * after the sync finished. Earlier this was a count of just the
+   * rows touched in this specific run, which made the banner say "0
+   * transactions pulled" on a re-sync that had nothing new — even
+   * though the user already had thousands of transactions saved. The
+   * UI labels this as "on record" so the meaning is clear.
+   */
   transactions: number;
   options_fetched: number;
   raw_activities: number;
@@ -864,13 +874,24 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     }
   })();
 
+  // Total transactions on record for this developer — what the UI
+  // shows in the summary. txCount above is just the rows we touched
+  // this run (often 0 on a re-sync that had nothing new), which
+  // misled users into thinking the sync hadn't done anything. The
+  // total count makes the summary honest: "X transactions on record"
+  // regardless of whether they came from this sync or a previous one.
+  const totalTxOnRecord = await prisma.investmentTransaction.count({
+    where: { account: { item: { application: { developerId: developer.id } } } },
+  });
+
   logger.info(
     {
       developerId: developer.id,
       connections: connections.length,
       accountsCount,
       holdingsCount,
-      txCount,
+      txTouchedThisRun: txCount,
+      totalTxOnRecord,
       optionsFetched,
       rawActivitiesFetched,
       skippedUnknownTotal,
@@ -885,7 +906,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     connections: connections.length,
     accounts: accountsCount,
     holdings: holdingsCount,
-    transactions: txCount,
+    transactions: totalTxOnRecord,
     options_fetched: optionsFetched,
     // Diagnostics so the UI can distinguish "broker returned nothing" from
     // "broker returned activities but Beacon's classifier didn't recognise

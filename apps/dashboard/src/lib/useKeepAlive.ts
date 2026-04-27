@@ -31,9 +31,12 @@ export function useKeepAlive(enabled: boolean) {
         /* swallow — keep-alive failures aren't actionable */
       });
     }
-    // Don't ping on mount — the user just hit the page, the
-    // backend was warm enough to serve auth. Schedule the first
-    // ping at the interval.
+    // Fire one ping immediately on mount so the backend starts
+    // waking up while the user's first authenticated query is
+    // still being prepared. This shaves Render's 3-5s cold-start
+    // off the perceived load time on the Overview page after
+    // periods of inactivity. Subsequent pings keep it warm.
+    ping();
     const t = window.setInterval(ping, KEEP_ALIVE_MS);
     return () => {
       cancelled = true;
