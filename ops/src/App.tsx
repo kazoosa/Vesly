@@ -529,6 +529,11 @@ function fmtNumber(n: unknown): string {
   return num.toLocaleString();
 }
 
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
 function bytesH(n: unknown): string {
   const v = typeof n === "number" ? n : parseFloat(String(n ?? 0));
   if (!Number.isFinite(v)) return "—";
@@ -1089,31 +1094,48 @@ function healthWidgets(s: NonNullable<OpsPayload["services"]>): WidgetDef[] {
         const dh = (s as Record<string, ServiceData | undefined>).dbhealth;
         const ping = Number(dh?.data?.pingMs ?? 0);
         const total = Number(dh?.data?.totalMs ?? 0);
+        // When the ping query failed, surface the actual error
+        // text in the heroSub so the user can see whether it's an
+        // SSL / connection-string issue rather than a vague "error"
+        // pill. Round 4 hardened the SQL but the ping itself can
+        // still genuinely fail — when it does, this gives the user
+        // something diagnostic to act on.
+        const isError = dh?.status === "error";
         return (
           <InfraCard
             icon={<Icon.Database />}
             title="Database health"
-            subtitle="Live query latency from the ops endpoint"
-            status={dh?.status}
-            hero={dh?.data?.pingMs ? `${ping} ms ping` : "—"}
-            heroSub={
-              total
-                ? `${total} ms across 3 queries`
-                : "Connect a DB to populate"
+            subtitle={
+              isError
+                ? "Couldn't reach the database from the ops endpoint"
+                : "Live query latency from the ops endpoint"
             }
-            metrics={[
-              {
-                label: "Public tables",
-                value: String(dh?.data?.publicTables ?? "—"),
-              },
-              {
-                label: "Biggest table",
-                value: String(dh?.data?.biggestTable ?? "—"),
-                sub: dh?.data?.biggestTableRows
-                  ? `${Number(dh.data.biggestTableRows).toLocaleString()} rows`
-                  : undefined,
-              },
-            ]}
+            status={dh?.status}
+            hero={dh?.data?.pingMs ? `${ping} ms ping` : isError ? "Down" : "—"}
+            heroSub={
+              isError && dh?.error
+                ? truncate(String(dh.error), 120)
+                : total
+                  ? `${total} ms across 3 queries`
+                  : "Connect a DB to populate"
+            }
+            metrics={
+              isError
+                ? []
+                : [
+                    {
+                      label: "Public tables",
+                      value: String(dh?.data?.publicTables ?? "—"),
+                    },
+                    {
+                      label: "Biggest table",
+                      value: String(dh?.data?.biggestTable ?? "—"),
+                      sub: dh?.data?.biggestTableRows
+                        ? `${Number(dh.data.biggestTableRows).toLocaleString()} rows`
+                        : undefined,
+                    },
+                  ]
+            }
           />
         );
       },
