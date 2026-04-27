@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd, fmtPct } from "../components/money";
 import { useTo } from "../lib/basePath";
+import { Skeleton } from "../components/Skeleton";
 
 /**
  * /app/options (and /demo/options) — dedicated view for option
@@ -202,11 +203,28 @@ export function OptionsPage() {
     };
   }, [options]);
 
+  // Render the page shell + skeletons immediately so the user sees
+  // structure in <200ms instead of a "Loading…" card. Each row fills
+  // in the moment the holdings query resolves.
   if (q.isLoading) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold text-fg-primary">Options</h1>
-        <div className="card p-10 text-center text-sm text-fg-muted">Loading…</div>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1 className="text-xl font-semibold text-fg-primary">Options</h1>
+            <Skeleton className="h-3 w-40 mt-2" />
+          </div>
+        </div>
+        <div className="card p-5 space-y-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 py-2">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 flex-1" />
+              <Skeleton className="h-3 w-16" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }

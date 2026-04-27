@@ -4,6 +4,7 @@ import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd } from "../components/money";
 import { useChartTheme, tooltipProps } from "../lib/chartTheme";
+import { Skeleton } from "../components/Skeleton";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 
 interface AllocResp {
@@ -24,8 +25,24 @@ export function AllocationPage() {
       f<AllocResp>(`/api/portfolio/allocation?rollupOptions=${rollup}`),
   });
 
+  // Render the page shell + skeletons immediately. The data fetch
+  // resolves into the cards below as it arrives — the user sees
+  // the layout in <200ms instead of staring at a "Loading…" card
+  // until the network round-trip completes.
   if (q.isLoading) {
-    return <div className="text-sm text-fg-muted">Loading…</div>;
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl font-semibold text-fg-primary">Allocation</h1>
+          <Skeleton className="h-3 w-40 mt-2" />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <DonutCardSkeleton key={i} />
+          ))}
+        </div>
+      </div>
+    );
   }
 
   const empty =
@@ -107,6 +124,27 @@ const TYPE_LABELS: Record<string, string> = {
   cash: "Cash",
   option: "Options",
 };
+
+function DonutCardSkeleton() {
+  return (
+    <div className="card p-5">
+      <Skeleton className="h-4 w-24 mb-4" />
+      <div className="h-52 flex items-center justify-center">
+        <Skeleton className="h-40 w-40 rounded-full" />
+      </div>
+      <div className="space-y-1.5 mt-4">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <Skeleton className="w-2 h-2 rounded-full" />
+            <Skeleton className="h-2.5 flex-1" />
+            <Skeleton className="h-2.5 w-10" />
+            <Skeleton className="h-2.5 w-16" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function DonutCard({
   title,

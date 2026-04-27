@@ -5,6 +5,7 @@ import { apiFetch } from "../lib/api";
 import { fmtUsd } from "../components/money";
 import { useChartTheme, tooltipProps } from "../lib/chartTheme";
 import { useTo } from "../lib/basePath";
+import { Skeleton } from "../components/Skeleton";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 interface DividendsResp {
@@ -24,12 +25,39 @@ export function DividendsPage() {
     queryFn: () => f<DividendsResp>("/api/portfolio/dividends"),
   });
 
+  // Render the page shell + skeletons immediately so the user
+  // sees the layout in <200ms instead of staring at "Loading…"
+  // until the network round-trip finishes. Each section fills in
+  // the moment its data arrives.
   if (q.isLoading) {
     return (
       <div className="space-y-6">
         <h1 className="text-xl font-semibold text-fg-primary">Dividends</h1>
-        <div className="card p-10 text-center text-sm text-fg-muted">
-          Loading…
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="card p-5">
+              <Skeleton className="h-2.5 w-24 mb-2" />
+              <Skeleton className="h-7 w-32" />
+            </div>
+          ))}
+        </div>
+        <div className="card p-5">
+          <Skeleton className="h-4 w-64 mb-4" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+        <div className="card p-5">
+          <Skeleton className="h-4 w-40 mb-4" />
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3 py-2">
+                <Skeleton className="h-3 w-14" />
+                <Skeleton className="h-3 flex-1 max-w-[200px]" />
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-2 flex-1 max-w-[200px] rounded-full" />
+                <Skeleton className="h-3 w-20" />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
