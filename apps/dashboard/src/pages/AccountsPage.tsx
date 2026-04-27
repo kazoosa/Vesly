@@ -280,6 +280,13 @@ export function AccountsPage() {
                   onAskConfirm={() => setConfirmItemId(itemId)}
                   onCancel={() => setConfirmItemId(null)}
                   onConfirm={() => {
+                    // Set pending FIRST so the row paints "Disconnecting…"
+                    // in the very next render. Otherwise there's a brief
+                    // window where the Disconnect button is visible again
+                    // (confirmOpen → false but pending → not yet true)
+                    // and a fast double-click fires the mutation twice.
+                    if (pendingItemId === itemId) return;
+                    setPendingItemId(itemId);
                     setConfirmItemId(null);
                     disconnect.mutate(itemId);
                   }}
