@@ -239,22 +239,59 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       },
     });
 
-    // Upsert Item (one per SnapTrade connection)
-    const item = await prisma.item.upsert({
+    // Upsert Item (one per SnapTrade connection).
+    //
+    // Prisma's `upsert` only checks the `where` for an existing row. The
+    // Item table has TWO unique constraints we have to respect:
+    //   1. snaptradeConnectionId — the natural key for SnapTrade connections
+    //   2. accessTokenHash — Plaid-era unique constraint, still enforced
+    // If a stale Item exists with the same accessTokenHash but a different
+    // (or null) snaptradeConnectionId — possible after a partial cleanup,
+    // a developer-id collision across re-creates, or a manual reset — the
+    // upsert's `where` misses, falls through to CREATE, and Prisma throws
+    // P2002 on accessTokenHash. The whole sync then aborts before we ever
+    // call the activities endpoint.
+    //
+    // Find-then-act handles both unique keys explicitly. We look up by
+    // BOTH unique columns, prefer the snaptradeConnectionId match, fall
+    // back to the accessTokenHash match (and migrate it onto the new
+    // connId), and only CREATE when neither row exists.
+    const accessTokenHash = `snaptrade:${connId}`;
+    const existingByConn = await prisma.item.findUnique({
       where: { snaptradeConnectionId: connId },
-      update: {
-        status: conn.disabled ? "ERROR" : "GOOD",
-      },
-      create: {
-        applicationId: application.id,
-        institutionId,
-        clientUserId: developer.id,
-        accessTokenHash: `snaptrade:${connId}`, // placeholder, never used as a real access token
-        snaptradeConnectionId: connId,
-        status: conn.disabled ? "ERROR" : "GOOD",
-        products: ["investments", "balance", "identity"],
-      },
     });
+    const existingByHash =
+      existingByConn ??
+      (await prisma.item.findUnique({ where: { accessTokenHash } }));
+    let item;
+    if (existingByConn) {
+      item = await prisma.item.update({
+        where: { id: existingByConn.id },
+        data: { status: conn.disabled ? "ERROR" : "GOOD" },
+      });
+    } else if (existingByHash) {
+      // Same access-token-hash placeholder, but the snaptradeConnectionId
+      // had drifted — claim that row for this connection.
+      item = await prisma.item.update({
+        where: { id: existingByHash.id },
+        data: {
+          snaptradeConnectionId: connId,
+          status: conn.disabled ? "ERROR" : "GOOD",
+        },
+      });
+    } else {
+      item = await prisma.item.create({
+        data: {
+          applicationId: application.id,
+          institutionId,
+          clientUserId: developer.id,
+          accessTokenHash, // placeholder, never used as a real access token
+          snaptradeConnectionId: connId,
+          status: conn.disabled ? "ERROR" : "GOOD",
+          products: ["investments", "balance", "identity"],
+        },
+      });
+    }
 
     // Accounts under this connection. Wrapped — listing accounts can
     // 403 when a brokerage authorization expired; the user expects the
