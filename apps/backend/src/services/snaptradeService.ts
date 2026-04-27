@@ -860,13 +860,41 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     }
   })();
 
+  // Total transactions on file for this developer — NOT just the
+  // ones inserted in this run. txCount is "new rows this sync" which
+  // is naturally 0 on a re-sync of a previously-synced account. The
+  // user wants to see "how many transactions do I have" in the
+  // summary, so we query the actual count across all their accounts.
+  // Wrapped in a try so a count() failure can't kill an otherwise
+  // successful sync; falls back to txCount for the response.
+  let totalTransactionsOnRecord = txCount;
+  try {
+    const apps = await prisma.application.findMany({
+      where: { developerId: developer.id },
+      select: { id: true },
+    });
+    if (apps.length > 0) {
+      totalTransactionsOnRecord = await prisma.investmentTransaction.count({
+        where: {
+          account: { item: { applicationId: { in: apps.map((a) => a.id) } } },
+        },
+      });
+    }
+  } catch (err) {
+    logger.warn(
+      { developerId: developer.id, err: (err as Error).message },
+      "snaptrade: failed to count total transactions; reporting new-only count",
+    );
+  }
+
   logger.info(
     {
       developerId: developer.id,
       connections: connections.length,
       accountsCount,
       holdingsCount,
-      txCount,
+      txCountNewlyInserted: txCount,
+      totalTransactionsOnRecord,
       optionsFetched,
       rawActivitiesFetched,
       skippedUnknownTotal,
@@ -881,7 +909,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     connections: connections.length,
     accounts: accountsCount,
     holdings: holdingsCount,
-    transactions: txCount,
+    transactions: totalTransactionsOnRecord,
     options_fetched: optionsFetched,
     // Diagnostics so the UI can distinguish "broker returned nothing" from
     // "broker returned activities but Beacon's classifier didn't recognise

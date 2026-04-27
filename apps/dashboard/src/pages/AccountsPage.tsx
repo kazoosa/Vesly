@@ -176,7 +176,7 @@ export function AccountsPage() {
               <strong>{isPartial ? "Partial sync" : "Last sync"}:</strong>{" "}
               {refresh.data.accounts} account{refresh.data.accounts === 1 ? "" : "s"},{" "}
               {refresh.data.holdings} holding{refresh.data.holdings === 1 ? "" : "s"},{" "}
-              {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"}
+              {refresh.data.transactions} transaction{refresh.data.transactions === 1 ? "" : "s"} on record
               {(refresh.data.options_fetched ?? 0) > 0 && (
                 <>, {refresh.data.options_fetched} option contract{refresh.data.options_fetched === 1 ? "" : "s"}</>
               )}
