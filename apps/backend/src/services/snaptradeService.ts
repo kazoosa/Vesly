@@ -614,6 +614,23 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       const today = new Date();
       const startDate = new Date(today);
       startDate.setFullYear(today.getFullYear() - years);
+      const startStr = startDate.toISOString().slice(0, 10);
+      const endStr = today.toISOString().slice(0, 10);
+      // Log BEFORE the call too — so if SnapTrade hangs and never
+      // returns, we still see in Render logs that we tried, with
+      // the exact params used. Greppable as "snaptrade activities
+      // requesting".
+      const actStartedAt = Date.now();
+      logger.info(
+        {
+          accountId: accId,
+          userId,
+          startDate: startStr,
+          endDate: endStr,
+          historyYears: years,
+        },
+        "snaptrade activities requesting",
+      );
       const actCallRes = await safeCall(
         "transactionsAndReporting.getActivities",
         { developerId: developer.id, accountId: accId, userSecret, startDate, endDate: today },
@@ -621,8 +638,8 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
           st.transactionsAndReporting.getActivities({
             userId,
             userSecret,
-            startDate: startDate.toISOString().slice(0, 10),
-            endDate: today.toISOString().slice(0, 10),
+            startDate: startStr,
+            endDate: endStr,
           }),
       );
 
@@ -648,7 +665,15 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       });
       rawActivitiesFetched += activities.length;
       logger.info(
-        { accountId: accId, activityCount: activities.length, totalReturned: allActivities.length },
+        {
+          accountId: accId,
+          userId,
+          activityCount: activities.length,
+          totalReturned: allActivities.length,
+          elapsedMs: Date.now() - actStartedAt,
+          startDate: startStr,
+          endDate: endStr,
+        },
         "snaptrade activities fetched",
       );
 
