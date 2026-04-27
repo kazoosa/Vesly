@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { useKeepAlive } from "./lib/useKeepAlive";
 import { ThemeProvider } from "./lib/theme";
 import { Shell } from "./components/Shell";
 import { PreviewLandingPage } from "./pages/PreviewLandingPage";
@@ -29,6 +30,10 @@ import { OptionsPage } from "./pages/OptionsPage";
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { accessToken, isDemo } = useAuth();
   const { pathname } = useLocation();
+  // Keep Render warm while the user is on an authenticated page so
+  // Refresh-now and other backend calls don't hit a 30s cold start.
+  // Hook is no-op when accessToken is null. See useKeepAlive.ts.
+  useKeepAlive(Boolean(accessToken) && !isDemo);
   if (!accessToken) return <Navigate to="/login" replace />;
   if (isDemo) {
     const sub = pathname.replace(/^\/app/, "");
