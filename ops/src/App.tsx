@@ -51,35 +51,37 @@ const THEMES: Array<{
   description: string;
   swatch: { bg: string; card: string; fg: string; accent: string };
 }> = [
+  // Swatch colors mirror the actual CSS variables in styles.css so the
+  // picker preview is accurate. If a theme palette changes, update both.
   {
     id: "light",
     label: "Light",
-    description: "Clean default. Same as the Beacon app dashboard.",
-    swatch: { bg: "#fafafc", card: "#ffffff", fg: "#11111b", accent: "#7c6aff" },
+    description: "Clean, minimal, professional — Linear / Vercel feel.",
+    swatch: { bg: "#F8F9FA", card: "#FFFFFF", fg: "#111827", accent: "#2563EB" },
   },
   {
     id: "dark",
     label: "Dark",
-    description: "Soft dark — easier on the eyes after sundown.",
-    swatch: { bg: "#07070b", card: "#111119", fg: "#f5f7fc", accent: "#7c6aff" },
+    description: "GitHub dark / VS Code dark — familiar, not harsh.",
+    swatch: { bg: "#0F1117", card: "#1A1D27", fg: "#F9FAFB", accent: "#3B82F6" },
   },
   {
     id: "midnight",
     label: "Midnight",
-    description: "Deep navy with electric cyan accents. Real ops terminal feel.",
-    swatch: { bg: "#050816", card: "#0f172e", fg: "#e2f1ff", accent: "#22d3ee" },
+    description: "Bloomberg terminal — deep navy, electric cyan, sharp.",
+    swatch: { bg: "#000B1E", card: "#001233", fg: "#E0F2FE", accent: "#00D4FF" },
   },
   {
     id: "solarized",
     label: "Solarized",
-    description: "Warm cream and muted accents. Long-session friendly.",
-    swatch: { bg: "#fdf6e3", card: "#fbf3df", fg: "#586e75", accent: "#cb4b16" },
+    description: "Warm cream, muted blues — easy on the eyes for long sessions.",
+    swatch: { bg: "#FDF6E3", card: "#EEE8D5", fg: "#002B36", accent: "#268BD2" },
   },
   {
     id: "high-contrast",
     label: "High contrast",
-    description: "Stark black and white. Maximum legibility.",
-    swatch: { bg: "#ffffff", card: "#ffffff", fg: "#000000", accent: "#000000" },
+    description: "Maximum legibility, accessibility-first.",
+    swatch: { bg: "#000000", card: "#0A0A0A", fg: "#FFFFFF", accent: "#FFFF00" },
   },
 ];
 
