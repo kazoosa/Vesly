@@ -486,36 +486,47 @@ export function ConnectButton() {
         </div>
       )}
 
-      <SnapTradeReact
-        loginLink={snapLoginLink ?? ""}
-        isOpen={Boolean(snapLoginLink)}
-        close={() => setSnapLoginLink(null)}
-        onSuccess={(id: unknown) => {
-          console.log("SnapTrade connected:", id);
-          syncFiredRef.current = true;
-          afterSnapTradeConnect(true);
-          setSnapLoginLink(null);
-        }}
-        onError={(err: unknown) => {
-          console.error("SnapTrade error:", err);
-          setError("Connection failed — please try again.");
-          setSnapLoginLink(null);
-        }}
-        onExit={() => {
-          // SnapTradeReact fires both onSuccess and onExit on a successful
-          // connect. Without the ref guard we'd kick off two parallel
-          // /sync calls (~25s each) on every connect. onExit without
-          // a successful onSuccess means the user closed the modal
-          // mid-flow, possibly after adding an extra account — sync
-          // anyway, but as a "first connect" so the same retry-once
-          // logic applies.
-          if (!syncFiredRef.current) {
+      {/* Only mount SnapTradeReact when we actually have a redirect
+          URL. Mounting it with loginLink="" caused the inner
+          `new URL(loginLink)` call to short-circuit harmlessly, but
+          having the modal in the tree at all forces React to set up
+          its iframe + window-message handlers on every render, and
+          a downstream Antd Modal style change in the snaptrade-react
+          package could otherwise leave the modal's internal
+          state desynced when isOpen flips. Conditional mount
+          guarantees a fresh modal instance per connection attempt. */}
+      {snapLoginLink && (
+        <SnapTradeReact
+          loginLink={snapLoginLink}
+          isOpen={true}
+          close={() => setSnapLoginLink(null)}
+          onSuccess={(id: unknown) => {
+            console.log("SnapTrade connected:", id);
+            syncFiredRef.current = true;
             afterSnapTradeConnect(true);
-          }
-          syncFiredRef.current = false;
-          setSnapLoginLink(null);
-        }}
-      />
+            setSnapLoginLink(null);
+          }}
+          onError={(err: unknown) => {
+            console.error("SnapTrade error:", err);
+            setError("Connection failed — please try again.");
+            setSnapLoginLink(null);
+          }}
+          onExit={() => {
+            // SnapTradeReact fires both onSuccess and onExit on a successful
+            // connect. Without the ref guard we'd kick off two parallel
+            // /sync calls (~25s each) on every connect. onExit without
+            // a successful onSuccess means the user closed the modal
+            // mid-flow, possibly after adding an extra account — sync
+            // anyway, but as a "first connect" so the same retry-once
+            // logic applies.
+            if (!syncFiredRef.current) {
+              afterSnapTradeConnect(true);
+            }
+            syncFiredRef.current = false;
+            setSnapLoginLink(null);
+          }}
+        />
+      )}
 
       <PostConnectSyncOverlay
         open={overlayOpen}
