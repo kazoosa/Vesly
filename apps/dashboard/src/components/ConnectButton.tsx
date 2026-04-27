@@ -4,6 +4,7 @@ import { SnapTradeReact } from "snaptrade-react";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { PostConnectSyncOverlay, type StepState } from "./PostConnectSyncOverlay";
+import { useActivityPollerContext } from "../lib/activityPollerContext";
 
 declare global {
   interface Window {
@@ -23,6 +24,12 @@ const LINK_UI_URL = (import.meta.env.VITE_LINK_UI_URL as string | undefined) ?? 
 export function ConnectButton() {
   const { accessToken, developer } = useAuth();
   const qc = useQueryClient();
+  // Background activity poller — picks up transactions when SnapTrade
+  // finishes warming its broker-side cache. We call .start() if a
+  // first-connect sync ends with accounts > 0 but transactions === 0
+  // (the cold-cache signature). May be null on routes that don't
+  // mount the provider — we noop in that case.
+  const activityPoller = useActivityPollerContext();
   const fetcher = apiFetch(() => accessToken);
   const [sdkReady, setSdkReady] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -313,6 +320,15 @@ export function ConnectButton() {
             transactions: { state: "done", count: final.transactions ?? 0 },
           });
         }
+        // The retry-once finished but transactions are STILL empty
+        // and the user has real accounts — that's SnapTrade's
+        // broker-side cache still warming up. Hand off to the
+        // background poller so the user can use the app while we
+        // wait. The poller hits a cheap activities-only endpoint
+        // every 2 minutes for up to 45 minutes.
+        if ((final.accounts ?? 0) > 0 && (final.transactions ?? 0) === 0) {
+          activityPoller?.start();
+        }
       } else {
         setSyncResult({
           ok: true,
@@ -446,7 +462,7 @@ export function ConnectButton() {
               <div className="mt-1">
                 {syncResult.accounts} account{syncResult.accounts === 1 ? "" : "s"},{" "}
                 {syncResult.holdings} holding{syncResult.holdings === 1 ? "" : "s"},{" "}
-                {syncResult.transactions} transaction{syncResult.transactions === 1 ? "" : "s"} on record
+                {syncResult.transactions} transaction{syncResult.transactions === 1 ? "" : "s"} pulled
                 {(syncResult.options_fetched ?? 0) > 0 && (
                   <>, {syncResult.options_fetched} option contract{syncResult.options_fetched === 1 ? "" : "s"}</>
                 )}

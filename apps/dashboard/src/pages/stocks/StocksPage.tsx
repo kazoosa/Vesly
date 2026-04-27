@@ -146,13 +146,7 @@ export function StocksPage() {
         <button
           type="button"
           onClick={() => setListCollapsed(false)}
-          // Offset by the desktop sidebar's collapsed width so the
-          // tab is visible to the right of it (was hiding behind the
-          // 49px-wide app sidebar at left:0). On mobile the app
-          // sidebar is offscreen so left-0 is fine; we use left-0
-          // there and shift on md+ via the sidebar offset. z-40 sits
-          // above page content but below the mobile drawer (z-50).
-          className="flex fixed left-0 md:left-[49px] top-1/2 -translate-y-1/2 z-40 items-center gap-1 px-1.5 py-3 rounded-r-md border border-l-0 border-border-subtle bg-bg-elevated text-fg-secondary hover:text-fg-primary hover:bg-bg-hover shadow-md transition-colors"
+          className="hidden md:flex fixed left-0 top-1/2 -translate-y-1/2 z-30 items-center gap-1 px-1.5 py-3 rounded-r-md border border-l-0 border-border-subtle bg-bg-elevated text-fg-secondary hover:text-fg-primary hover:bg-bg-hover transition-colors"
           title="Show symbol list"
           aria-label="Show symbol list"
         >
