@@ -33,10 +33,13 @@ interface Steps {
     count?: number;
     attempt?: number;
     maxAttempts?: number;
-    /** True when the foreground sync returned with empty transactions
-     *  but the background poller has been started — we treat that as
-     *  "loaded enough to dismiss" so the user gets back into the app. */
-    pollerStarted?: boolean;
+    /** True when the foreground sync returned 0 transactions and the
+     *  overlay is now polling SnapTrade in a tight loop, waiting for
+     *  the broker-side cache to warm. The bar locks at 90% with a
+     *  pulse, the copy switches to "Waiting for your broker…", and
+     *  the user stays on the overlay. The escape hatch only appears
+     *  after 10 minutes (see `onSkipWait` below). */
+    waitingForBroker?: boolean;
   };
 }
 
@@ -52,6 +55,11 @@ interface Props {
   /** True when every step is done (or errored). When true we hold
    *  at 100% for 500ms then fade out. */
   ready: boolean;
+  /** Called when the user clicks "Continue without transactions"
+   *  — the escape-hatch button shown only after 10 minutes of
+   *  waiting for the broker-side cache. The parent stops the
+   *  poll loop and dismisses the overlay. */
+  onSkipWait?: () => void;
 }
 
 // Per-step weight contribution to overall progress. Sum to 100.
@@ -70,6 +78,10 @@ const STEP_ORDER: StepKey[] = ["connecting", "accounts", "holdings", "transactio
 
 function targetPercent(steps: Steps, ready: boolean): number {
   if (ready) return 100;
+  // Waiting on the broker-side cache: hold at 90 (everything before
+  // transactions is done; transactions are pending the broker). The
+  // bar pulses on top of this constant — see WaitingPulse below.
+  if (steps.transactions.waitingForBroker) return 90;
   let pct = 0;
   for (const k of STEP_ORDER) {
     const s = steps[k];
@@ -85,11 +97,6 @@ function targetPercent(steps: Steps, ready: boolean): number {
       break;
     }
   }
-  // Special case: transactions step kicked off the poller. The user
-  // doesn't need to wait for the poller to finish before getting
-  // back into the app, so treat poller-started as 90% complete and
-  // let the parent flip ready=true to push to 100%.
-  if (steps.transactions.pollerStarted && pct < 90) pct = 90;
   return Math.min(100, pct);
 }
 
@@ -123,8 +130,8 @@ function stepLabel(k: StepKey, step: Steps[StepKey]): string {
       if (isDone) {
         return `${s.count ?? 0} transaction${s.count === 1 ? "" : "s"} loaded`;
       }
-      if (s.pollerStarted) {
-        return "Transactions loading in background…";
+      if (s.waitingForBroker) {
+        return "Waiting for your broker to prepare transaction history…";
       }
       if (isErr) return "Couldn't pull transactions";
       if (isProg && s.attempt && s.maxAttempts && s.attempt > 1) {
@@ -148,7 +155,17 @@ export function PostConnectSyncOverlay({
   elapsedSeconds,
   onClose,
   ready,
+  onSkipWait,
 }: Props) {
+  const waitingForBroker = Boolean(steps.transactions.waitingForBroker) && !ready;
+  // Escape hatch: 10 minutes is a long wait. Some brokers really do
+  // take that long on first connect — but past that point the user
+  // has earned the right to bail without losing their seat. Showing
+  // the button earlier would tempt people into a worse experience
+  // (no transactions visible) when waiting another minute would
+  // have resolved the sync cleanly.
+  const showEscapeHatch =
+    waitingForBroker && elapsedSeconds >= 600 && !!onSkipWait;
   // Force re-render every second so the ETA + elapsed counter
   // recompute without needing the parent to push them.
   const [, force] = useState(0);
@@ -254,23 +271,29 @@ export function PostConnectSyncOverlay({
         }}
       >
         {/* Progress bar — anchored to the very top of the card. Two
-            layers: a static track + the animated fill. The fill has
-            a subtle moving sheen on top to communicate liveness even
-            when it's between checkpoints. */}
+            layers: a static track + the animated fill. While we're
+            waiting on the broker-side cache the fill pulses
+            (opacity oscillation) instead of using the marching
+            shimmer — communicates "still happening, not stuck"
+            without faking forward motion. */}
         <div className="relative h-1 bg-bg-overlay">
           <div
-            className="absolute inset-y-0 left-0 bg-fg-primary transition-[width] duration-150 ease-out"
+            className={`absolute inset-y-0 left-0 bg-fg-primary transition-[width] duration-150 ease-out ${
+              waitingForBroker ? "animate-pulse" : ""
+            }`}
             style={{ width: `${displayPct}%` }}
           >
-            <div
-              className="absolute inset-0 opacity-60"
-              style={{
-                background:
-                  "linear-gradient(90deg, transparent 0%, rgb(255 255 255 / 0.35) 50%, transparent 100%)",
-                backgroundSize: "200% 100%",
-                animation: "beacon-shimmer 1.6s linear infinite",
-              }}
-            />
+            {!waitingForBroker && (
+              <div
+                className="absolute inset-0 opacity-60"
+                style={{
+                  background:
+                    "linear-gradient(90deg, transparent 0%, rgb(255 255 255 / 0.35) 50%, transparent 100%)",
+                  backgroundSize: "200% 100%",
+                  animation: "beacon-shimmer 1.6s linear infinite",
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -287,7 +310,9 @@ export function PostConnectSyncOverlay({
           <p className="text-xs text-fg-secondary mb-5 leading-relaxed">
             {ready
               ? "Your data is in. Returning you to the dashboard."
-              : "Hang tight — we're pulling everything from your broker. This window will close on its own."}
+              : waitingForBroker
+                ? "Your accounts and holdings are saved. Now we're waiting on your broker to release the transaction history — this can take a few minutes on first connect."
+                : "Hang tight — we're pulling everything from your broker. This window will close on its own."}
           </p>
 
           {/* Steps */}
@@ -298,8 +323,37 @@ export function PostConnectSyncOverlay({
           </ol>
 
           {/* ETA / long-sync message */}
-          <div className="mt-5 pt-4 border-t border-border-subtle">
-            {veryLong ? (
+          <div className="mt-5 pt-4 border-t border-border-subtle space-y-3">
+            {waitingForBroker ? (
+              <>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-fg-muted">
+                    Checking every 60 seconds — we'll dismiss this the
+                    moment your transactions arrive.
+                  </span>
+                  <span className="text-fg-fainter font-num tabular-nums whitespace-nowrap">
+                    {fmtElapsed(elapsedSeconds)}
+                  </span>
+                </div>
+                {showEscapeHatch && (
+                  <div className="pt-1">
+                    <p className="text-[11px] text-fg-muted mb-2 leading-relaxed">
+                      Still waiting after {Math.round(elapsedSeconds / 60)} minutes.
+                      You can continue without transactions and we'll
+                      load them in the background — but expect them to
+                      take a while longer to appear.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onSkipWait}
+                      className="btn-ghost text-[11px] w-full justify-center"
+                    >
+                      Continue without transactions
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : veryLong ? (
               <p className="text-[11px] text-fg-secondary leading-relaxed">
                 <span className="font-semibold text-amber-500">
                   This is taking longer than usual.

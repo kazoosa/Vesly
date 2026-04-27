@@ -5,7 +5,6 @@ import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import { useBasePath } from "../lib/basePath";
 import { ConnectButton } from "./ConnectButton";
-import { ActivityPollerBanner } from "./ActivityPollerBanner";
 import { APP_NAME } from "../lib/brand";
 import { BeaconMark } from "./BeaconMark";
 import { SessionNavBar, SIDEBAR_COLLAPSED_PX } from "./ui/sidebar";
@@ -194,7 +193,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
           rather than re-flowing it — nothing reflows as the user glances
           at the nav. */}
       <main className="min-w-0 bg-bg-base md:pl-[var(--sidebar-w)]" style={{ ['--sidebar-w' as string]: `${SIDEBAR_COLLAPSED_PX}px` }}>
-        <ActivityPollerBanner />
         <div className="p-4 md:p-6 max-w-7xl mx-auto motion-safe:animate-fade-in">{children}</div>
       </main>
     </div>

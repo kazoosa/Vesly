@@ -14,7 +14,6 @@ import { HoldingsPage } from "./pages/HoldingsPage";
 import { TransactionsPage } from "./pages/TransactionsPage";
 import { AddTransactionPage } from "./pages/AddTransactionPage";
 import { ToastProvider } from "./components/Toast";
-import { ActivityPollerProvider } from "./lib/activityPollerContext";
 import { DividendsPage } from "./pages/DividendsPage";
 import { AllocationPage } from "./pages/AllocationPage";
 import { AccountsPage } from "./pages/AccountsPage";
@@ -40,14 +39,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     const sub = pathname.replace(/^\/app/, "");
     return <Navigate to={`/demo${sub}`} replace />;
   }
-  // ActivityPollerProvider is scoped to authenticated /app/* routes
-  // because the poller hits a developer-bound endpoint. Demo users
-  // don't connect real brokerages, so they never need the banner.
-  return (
-    <ActivityPollerProvider>
-      <Shell>{children}</Shell>
-    </ActivityPollerProvider>
-  );
+  return <Shell>{children}</Shell>;
 }
 
 /**
