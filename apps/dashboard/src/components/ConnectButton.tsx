@@ -43,6 +43,7 @@ export function ConnectButton() {
   const [overlayElapsed, setOverlayElapsed] = useState(0);
   const elapsedTimerRef = useRef<number | null>(null);
   const [overlaySteps, setOverlaySteps] = useState<{
+    connecting: { state: StepState };
     accounts: { state: StepState; count?: number };
     holdings: { state: StepState; count?: number };
     transactions: {
@@ -50,8 +51,10 @@ export function ConnectButton() {
       count?: number;
       attempt?: number;
       maxAttempts?: number;
+      pollerStarted?: boolean;
     };
   }>({
+    connecting: { state: "pending" },
     accounts: { state: "pending" },
     holdings: { state: "pending" },
     transactions: { state: "pending" },
@@ -247,7 +250,13 @@ export function ConnectButton() {
   async function afterSnapTradeConnect(firstConnect = false) {
     setSyncResult(null);
     if (firstConnect) {
+      // OAuth has just completed (we're inside SnapTradeReact.onSuccess),
+      // so connecting is already done. The other three steps flip to
+      // in-progress and then to done as the /sync response and its
+      // retry resolve. The progress bar fills smoothly between
+      // checkpoints — see PostConnectSyncOverlay.tsx for the math.
       setOverlaySteps({
+        connecting: { state: "done" },
         accounts: { state: "in_progress" },
         holdings: { state: "in_progress" },
         transactions: { state: "in_progress", attempt: 1, maxAttempts: 2 },
@@ -276,6 +285,7 @@ export function ConnectButton() {
       // retry below if so, otherwise mark done.
       if (firstConnect) {
         setOverlaySteps((prev) => ({
+          connecting: prev.connecting,
           accounts: { state: "done", count: out.accounts ?? 0 },
           holdings: { state: "done", count: out.holdings ?? 0 },
           transactions: prev.transactions, // decide below
@@ -297,6 +307,7 @@ export function ConnectButton() {
         // we're retrying — not just hanging.
         setOverlaySteps((prev) => ({
           ...prev,
+          connecting: { state: "done" },
           transactions: { state: "in_progress", attempt: 2, maxAttempts: 2 },
         }));
         await new Promise((r) => setTimeout(r, 8_000));
@@ -313,21 +324,29 @@ export function ConnectButton() {
           errors: final.errors,
           fully_succeeded: final.fully_succeeded,
         });
-        if (firstConnect) {
-          setOverlaySteps({
-            accounts: { state: "done", count: final.accounts ?? 0 },
-            holdings: { state: "done", count: final.holdings ?? 0 },
-            transactions: { state: "done", count: final.transactions ?? 0 },
-          });
-        }
         // The retry-once finished but transactions are STILL empty
         // and the user has real accounts — that's SnapTrade's
         // broker-side cache still warming up. Hand off to the
         // background poller so the user can use the app while we
         // wait. The poller hits a cheap activities-only endpoint
-        // every 2 minutes for up to 45 minutes.
-        if ((final.accounts ?? 0) > 0 && (final.transactions ?? 0) === 0) {
+        // every 2 minutes for up to 45 minutes. The overlay shows
+        // "Transactions loading in background…" which the progress
+        // calc treats as ~90% done — the user gets to dismiss
+        // without staring at a hung "Pulling transactions…" row.
+        const handOffToPoller =
+          (final.accounts ?? 0) > 0 && (final.transactions ?? 0) === 0;
+        if (handOffToPoller) {
           activityPoller?.start();
+        }
+        if (firstConnect) {
+          setOverlaySteps({
+            connecting: { state: "done" },
+            accounts: { state: "done", count: final.accounts ?? 0 },
+            holdings: { state: "done", count: final.holdings ?? 0 },
+            transactions: handOffToPoller
+              ? { state: "in_progress", pollerStarted: true }
+              : { state: "done", count: final.transactions ?? 0 },
+          });
         }
       } else {
         setSyncResult({
@@ -345,6 +364,7 @@ export function ConnectButton() {
         if (firstConnect) {
           setOverlaySteps((prev) => ({
             ...prev,
+            connecting: { state: "done" },
             transactions: { state: "done", count: out.transactions ?? 0 },
           }));
         }
@@ -359,6 +379,7 @@ export function ConnectButton() {
       setSyncResult({ ok: false, message: (err as Error).message });
       if (firstConnect) {
         setOverlaySteps((prev) => ({
+          connecting: prev.connecting,
           accounts: prev.accounts.state === "done" ? prev.accounts : { state: "error" },
           holdings: prev.holdings.state === "done" ? prev.holdings : { state: "error" },
           transactions: { state: "error" },
