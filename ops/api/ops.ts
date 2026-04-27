@@ -59,29 +59,31 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
   }
   const sql = neon(url);
 
-  // Parallel queries — each returns a single row
-  const [
-    totalUsersRow,
-    todaySignupsRow,
-    weekSignupsRow,
-    itemsRow,
-    holdingsRow,
-    recentSignups,
-    monthSignupsByDay,
-    activeUsers7d,
-    topBroker,
-    syncErrorsLastHour,
-    syncRateRows,
-  ] = (await Promise.all([
+  // Each query is wrapped via Promise.allSettled so a single failing
+  // query (missing column on production, etc.) can't blow up the
+  // entire business service. The Round 3 widgets reference columns
+  // (Item.updatedAt, ApiLog.responseStatus, etc.) that may not exist
+  // on every deployed schema; without this, one missing column was
+  // killing all 11 widgets.
+  type R<T> = T | null;
+  function ok<T>(r: PromiseSettledResult<T>): R<T> {
+    return r.status === "fulfilled" ? r.value : null;
+  }
+
+  const settled = await Promise.allSettled([
+    // 0: totalUsers — must succeed for the page to look right
     sql`SELECT COUNT(*)::int AS n FROM "Developer"`,
+    // 1: todaySignups
     sql`SELECT COUNT(*)::int AS n FROM "Developer" WHERE "createdAt" >= NOW() - INTERVAL '1 day'`,
+    // 2: weekSignups
     sql`SELECT COUNT(*)::int AS n FROM "Developer" WHERE "createdAt" >= NOW() - INTERVAL '7 days'`,
+    // 3: items
     sql`SELECT COUNT(*)::int AS n FROM "Item" WHERE status = 'GOOD'`,
+    // 4: holdings
     sql`SELECT COUNT(*)::int AS n FROM "InvestmentHolding"`,
+    // 5: recentSignups
     sql`SELECT email, "createdAt" FROM "Developer" ORDER BY "createdAt" DESC LIMIT 5`,
-    // Per-day signup counts for the last 30 days — drives the
-    // sparkline widget. Always 30 rows, padded with zero where no
-    // signups happened that day.
+    // 6: monthSignupsByDay (sparkline)
     sql`
       WITH days AS (
         SELECT generate_series(
@@ -98,17 +100,14 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
       GROUP BY days.day
       ORDER BY days.day ASC
     `,
-    // "Active in last 7 days" — best proxy we have without a
-    // LoginEvent table is "an Item belonging to this developer
-    // had its updatedAt touch in the last 7 days" (sync writes).
+    // 7: activeUsers7d — depends on Item.updatedAt
     sql`
       SELECT COUNT(DISTINCT a."developerId")::int AS n
       FROM "Application" a
       INNER JOIN "Item" i ON i."applicationId" = a.id
       WHERE i."updatedAt" >= NOW() - INTERVAL '7 days'
     `,
-    // Top broker by connection count — institution is referenced by
-    // Item.institutionId. Display top one only.
+    // 8: topBroker
     sql`
       SELECT inst.name AS name, COUNT(*)::int AS n
       FROM "Item" i
@@ -118,17 +117,14 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
       ORDER BY n DESC
       LIMIT 1
     `,
-    // ApiLog rows with status >= 500 in the last hour. Will be 0
-    // if no errors logged or if ApiLog is empty.
+    // 9: errorRate1h — depends on ApiLog.responseStatus
     sql`
       SELECT COUNT(*)::int AS n
       FROM "ApiLog"
       WHERE "createdAt" >= NOW() - INTERVAL '1 hour'
         AND "responseStatus" >= 500
     `,
-    // Sync success rate over the last 24h — driven by ApiLog rows
-    // matching the SnapTrade sync route. Returns total + success
-    // count so the widget can show % and absolute counts.
+    // 10: syncRate24h — depends on ApiLog
     sql`
       SELECT
         COUNT(*)::int AS total,
@@ -137,31 +133,63 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
       WHERE "createdAt" >= NOW() - INTERVAL '1 day'
         AND "endpoint" LIKE '%/snaptrade/sync%'
     `,
-  ])) as [
-    Array<{ n: number }>,
-    Array<{ n: number }>,
-    Array<{ n: number }>,
-    Array<{ n: number }>,
-    Array<{ n: number }>,
-    Array<{ email: string; createdAt: string }>,
-    Array<{ day: string; n: number }>,
-    Array<{ n: number }>,
-    Array<{ name: string; n: number }>,
-    Array<{ n: number }>,
-    Array<{ total: number; ok: number }>,
-  ];
+  ]);
+
+  // Log every rejection so we can see in the Render-style ops log
+  // exactly which optional widget failed and why. Frontend doesn't
+  // see these — they're server-side breadcrumbs.
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i];
+    if (r && r.status === "rejected") {
+      // eslint-disable-next-line no-console
+      console.warn(`[ops/business] query ${i} failed:`, (r.reason as Error)?.message);
+    }
+  }
+
+  const totalUsersRow = ok(settled[0] as PromiseSettledResult<Array<{ n: number }>>);
+  const todaySignupsRow = ok(settled[1] as PromiseSettledResult<Array<{ n: number }>>);
+  const weekSignupsRow = ok(settled[2] as PromiseSettledResult<Array<{ n: number }>>);
+  const itemsRow = ok(settled[3] as PromiseSettledResult<Array<{ n: number }>>);
+  const holdingsRow = ok(settled[4] as PromiseSettledResult<Array<{ n: number }>>);
+  const recentSignups = ok(
+    settled[5] as PromiseSettledResult<Array<{ email: string; createdAt: string }>>,
+  );
+  const monthSignupsByDay = ok(
+    settled[6] as PromiseSettledResult<Array<{ day: string; n: number }>>,
+  );
+  const activeUsers7d = ok(settled[7] as PromiseSettledResult<Array<{ n: number }>>);
+  const topBroker = ok(
+    settled[8] as PromiseSettledResult<Array<{ name: string; n: number }>>,
+  );
+  const syncErrorsLastHour = ok(
+    settled[9] as PromiseSettledResult<Array<{ n: number }>>,
+  );
+  const syncRateRows = ok(
+    settled[10] as PromiseSettledResult<Array<{ total: number; ok: number }>>,
+  );
+
+  // The four core counts must succeed for the widget to be useful.
+  // If even Developer COUNT(*) failed something is fundamentally
+  // wrong with the connection — bubble that up so the user sees a
+  // real error instead of "0 users".
+  if (!totalUsersRow) {
+    return {
+      status: "error",
+      error: "Could not query Developer table — check DATABASE_URL points at the right database.",
+    };
+  }
 
   const totalUsers = totalUsersRow[0]?.n ?? 0;
-  const todaySignups = todaySignupsRow[0]?.n ?? 0;
-  const weekSignups = weekSignupsRow[0]?.n ?? 0;
-  const items = itemsRow[0]?.n ?? 0;
-  const holdings = holdingsRow[0]?.n ?? 0;
-  const activeUsers = activeUsers7d[0]?.n ?? 0;
-  const topBrokerName = topBroker[0]?.name ?? null;
-  const topBrokerCount = topBroker[0]?.n ?? 0;
-  const errorRate1h = syncErrorsLastHour[0]?.n ?? 0;
-  const syncTotal24h = syncRateRows[0]?.total ?? 0;
-  const syncOk24h = syncRateRows[0]?.ok ?? 0;
+  const todaySignups = todaySignupsRow?.[0]?.n ?? 0;
+  const weekSignups = weekSignupsRow?.[0]?.n ?? 0;
+  const items = itemsRow?.[0]?.n ?? 0;
+  const holdings = holdingsRow?.[0]?.n ?? 0;
+  const activeUsers = activeUsers7d?.[0]?.n ?? 0;
+  const topBrokerName = topBroker?.[0]?.name ?? null;
+  const topBrokerCount = topBroker?.[0]?.n ?? 0;
+  const errorRate1h = syncErrorsLastHour?.[0]?.n ?? 0;
+  const syncTotal24h = syncRateRows?.[0]?.total ?? 0;
+  const syncOk24h = syncRateRows?.[0]?.ok ?? 0;
   const syncSuccessPct =
     syncTotal24h > 0 ? +((syncOk24h / syncTotal24h) * 100).toFixed(1) : null;
 
@@ -181,8 +209,8 @@ async function getBusinessMetrics(): Promise<ServiceResult> {
       syncTotal24h,
       syncOk24h,
       syncSuccessPct,
-      signupSparkline: monthSignupsByDay,
-      _recentSignups: recentSignups.map((r) => ({
+      signupSparkline: monthSignupsByDay ?? [],
+      _recentSignups: (recentSignups ?? []).map((r) => ({
         title: r.email,
         time: fmtTime(r.createdAt),
       })),
@@ -327,30 +355,59 @@ async function getDbHealth(): Promise<ServiceResult> {
   const url = process.env.DATABASE_URL;
   if (!url) return unconfigured("DATABASE_URL not set");
   const sql = neon(url);
-  // Three lightweight queries — pure timing exercise. NOT a load test;
-  // we just want a current latency number the user can sanity-check
-  // against historical norms. Run sequentially so the times are
-  // additive and don't share connection setup costs.
+  // Each timing query is wrapped individually so missing tables /
+  // permission errors degrade to "—" instead of marking the whole
+  // widget as broken. The ping query is the only must-succeed one.
+  async function safeQuery<T>(fn: () => Promise<T>): Promise<T | null> {
+    try {
+      return await fn();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[ops/dbhealth] query failed:", (e as Error).message);
+      return null;
+    }
+  }
+
   const t0 = Date.now();
-  await sql`SELECT 1`;
+  let pingErr: Error | null = null;
+  try {
+    await sql`SELECT 1`;
+  } catch (e) {
+    pingErr = e as Error;
+  }
   const t1 = Date.now();
-  const tableCount = (await sql`
-    SELECT COUNT(*)::int AS n
-    FROM information_schema.tables
-    WHERE table_schema = 'public'
-  `) as Array<{ n: number }>;
-  const t2 = Date.now();
-  const longestTable = (await sql`
-    SELECT relname, n_live_tup::bigint AS rows
-    FROM pg_stat_user_tables
-    ORDER BY n_live_tup DESC NULLS LAST
-    LIMIT 1
-  `) as Array<{ relname: string; rows: number }>;
-  const t3 = Date.now();
   const pingMs = t1 - t0;
+
+  if (pingErr) {
+    return {
+      status: "error",
+      error: `Ping failed: ${pingErr.message}`,
+      data: { pingMs },
+    };
+  }
+
+  const tableCount = (await safeQuery(
+    () =>
+      sql`
+        SELECT COUNT(*)::int AS n
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+      ` as unknown as Promise<Array<{ n: number }>>,
+  )) as Array<{ n: number }> | null;
+  const t2 = Date.now();
+  const longestTable = (await safeQuery(
+    () =>
+      sql`
+        SELECT relname, n_live_tup::bigint AS rows
+        FROM pg_stat_user_tables
+        ORDER BY n_live_tup DESC NULLS LAST
+        LIMIT 1
+      ` as unknown as Promise<Array<{ relname: string; rows: number }>>,
+  )) as Array<{ relname: string; rows: number }> | null;
+  const t3 = Date.now();
   const totalMs = t3 - t0;
   const status: Status =
-    pingMs > 500 ? "warn" : pingMs > 1500 ? "error" : "ok";
+    pingMs > 1500 ? "error" : pingMs > 500 ? "warn" : "ok";
   return {
     status,
     data: {
@@ -358,9 +415,9 @@ async function getDbHealth(): Promise<ServiceResult> {
       schemaQueryMs: t2 - t1,
       statsQueryMs: t3 - t2,
       totalMs,
-      publicTables: tableCount[0]?.n ?? 0,
-      biggestTable: longestTable[0]?.relname ?? null,
-      biggestTableRows: Number(longestTable[0]?.rows ?? 0),
+      publicTables: tableCount?.[0]?.n ?? 0,
+      biggestTable: longestTable?.[0]?.relname ?? null,
+      biggestTableRows: Number(longestTable?.[0]?.rows ?? 0),
     },
   };
 }
