@@ -126,7 +126,14 @@ async function safeCall<T>(
     if (typeof safeContext.userSecret === "string") {
       safeContext.userSecret = "[redacted]";
     }
-    logger.error(
+    // 404 on optional endpoints (notably listOptionHoldings for
+    // brokers that don't expose options data, like Robinhood for
+    // certain account types) isn't a real failure — it's the broker
+    // saying "I don't have this data type for this account". Log
+    // those at warn so they don't pollute error dashboards. Real
+    // failures (5xx, 401/403, etc.) stay at error.
+    const logFn = status === 404 ? logger.warn : logger.error;
+    logFn(
       {
         snaptradeCall: label,
         status,
@@ -136,7 +143,9 @@ async function safeCall<T>(
         method: e.config?.method,
         ...safeContext,
       },
-      `snaptrade: ${label} failed`,
+      status === 404
+        ? `snaptrade: ${label} not available for this account (404)`
+        : `snaptrade: ${label} failed`,
     );
     return {
       ok: false,
@@ -354,51 +363,46 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         acc.number ?? "0000",
       ).slice(-4);
 
-      // Account upsert wrapped in a narrow transaction that:
-      //   1. Re-confirms the parent Item exists (defensive — the
-      //      itemConfirmed check above caught the connection-pool
-      //      window, but a long-running sync could still race a
-      //      concurrent disconnect that cascade-deletes the Item
-      //      mid-loop).
-      //   2. Catches FK conflicts inside the transaction so a single
-      //      bad account doesn't kill the whole sync — we record it
-      //      in errors[] and move on instead of bubbling to the
-      //      route handler.
+      // Account upsert — direct call on the shared prisma client.
+      //
+      // Earlier this was wrapped in its own $transaction with a
+      // defensive findUnique on the parent Item. That actually MADE
+      // things worse: the inner transaction opens a new Prisma
+      // session, and on Neon's pgbouncer-pooled connection that
+      // session can briefly read-stale across the recent Item write
+      // — false-positiving "parent Item disappeared" even when the
+      // Item was perfectly fine. The outer itemConfirmed check
+      // (which runs on the same client as the upcoming upserts) is
+      // the right guard. The upsert itself runs on the shared
+      // client where Item is already visible.
+      //
+      // If a real concurrent disconnect cascades the Item away mid-
+      // sync, the upsert will throw a P2003 FK error which we catch
+      // here, log, and continue past — same outcome as before but
+      // without the false alarms.
       let account: Awaited<ReturnType<typeof prisma.account.upsert>>;
       try {
-        account = await prisma.$transaction(
-          async (tx) => {
-            const itemStillThere = await tx.item.findUnique({
-              where: { id: item.id },
-              select: { id: true },
-            });
-            if (!itemStillThere) {
-              throw new Error(`parent Item ${item.id} disappeared before Account write`);
-            }
-            return tx.account.upsert({
-              where: { snaptradeAccountId: accId },
-              update: {
-                currentBalance: balance,
-                availableBalance: balance,
-                name: accountName,
-                mask: accountMask,
-              },
-              create: {
-                itemId: item.id,
-                snaptradeAccountId: accId,
-                name: accountName,
-                officialName: String(acc.institution_name ?? ""),
-                mask: accountMask,
-                type: "investment",
-                subtype: "brokerage",
-                currentBalance: balance,
-                availableBalance: balance,
-                isoCurrencyCode: "USD",
-              },
-            });
+        account = await prisma.account.upsert({
+          where: { snaptradeAccountId: accId },
+          update: {
+            currentBalance: balance,
+            availableBalance: balance,
+            name: accountName,
+            mask: accountMask,
           },
-          { timeout: 10_000 },
-        );
+          create: {
+            itemId: item.id,
+            snaptradeAccountId: accId,
+            name: accountName,
+            officialName: String(acc.institution_name ?? ""),
+            mask: accountMask,
+            type: "investment",
+            subtype: "brokerage",
+            currentBalance: balance,
+            availableBalance: balance,
+            isoCurrencyCode: "USD",
+          },
+        });
       } catch (err) {
         logger.error(
           { developerId: developer.id, itemId: item.id, accId, err: (err as Error).message },
@@ -860,41 +864,13 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     }
   })();
 
-  // Total transactions on file for this developer — NOT just the
-  // ones inserted in this run. txCount is "new rows this sync" which
-  // is naturally 0 on a re-sync of a previously-synced account. The
-  // user wants to see "how many transactions do I have" in the
-  // summary, so we query the actual count across all their accounts.
-  // Wrapped in a try so a count() failure can't kill an otherwise
-  // successful sync; falls back to txCount for the response.
-  let totalTransactionsOnRecord = txCount;
-  try {
-    const apps = await prisma.application.findMany({
-      where: { developerId: developer.id },
-      select: { id: true },
-    });
-    if (apps.length > 0) {
-      totalTransactionsOnRecord = await prisma.investmentTransaction.count({
-        where: {
-          account: { item: { applicationId: { in: apps.map((a) => a.id) } } },
-        },
-      });
-    }
-  } catch (err) {
-    logger.warn(
-      { developerId: developer.id, err: (err as Error).message },
-      "snaptrade: failed to count total transactions; reporting new-only count",
-    );
-  }
-
   logger.info(
     {
       developerId: developer.id,
       connections: connections.length,
       accountsCount,
       holdingsCount,
-      txCountNewlyInserted: txCount,
-      totalTransactionsOnRecord,
+      txCount,
       optionsFetched,
       rawActivitiesFetched,
       skippedUnknownTotal,
@@ -909,7 +885,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     connections: connections.length,
     accounts: accountsCount,
     holdings: holdingsCount,
-    transactions: totalTransactionsOnRecord,
+    transactions: txCount,
     options_fetched: optionsFetched,
     // Diagnostics so the UI can distinguish "broker returned nothing" from
     // "broker returned activities but Beacon's classifier didn't recognise
