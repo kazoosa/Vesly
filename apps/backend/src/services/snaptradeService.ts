@@ -241,56 +241,86 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
 
     // Upsert Item (one per SnapTrade connection).
     //
-    // Prisma's `upsert` only checks the `where` for an existing row. The
-    // Item table has TWO unique constraints we have to respect:
+    // Wrapped in $transaction so the find-then-act chain runs on a
+    // single Prisma connection and either fully commits or fully
+    // rolls back. Two specific failure modes this guards against:
+    //
+    //   * Connection-pool inconsistency on Neon serverless: two
+    //     consecutive prisma calls can land on different pgbouncer
+    //     connections; the second can briefly miss the first's write.
+    //     A transaction pins both to one connection.
+    //
+    //   * Concurrent sync race: if two syncs fire simultaneously
+    //     (e.g. user double-click Refresh, or auto-sync overlap with
+    //     manual click), both might see "no Item" and both try to
+    //     create. The transaction + serializable isolation catches
+    //     this; on conflict we re-read and treat as "found by conn".
+    //
+    // The Item table has TWO unique constraints we respect:
     //   1. snaptradeConnectionId — the natural key for SnapTrade connections
     //   2. accessTokenHash — Plaid-era unique constraint, still enforced
-    // If a stale Item exists with the same accessTokenHash but a different
-    // (or null) snaptradeConnectionId — possible after a partial cleanup,
-    // a developer-id collision across re-creates, or a manual reset — the
-    // upsert's `where` misses, falls through to CREATE, and Prisma throws
-    // P2002 on accessTokenHash. The whole sync then aborts before we ever
-    // call the activities endpoint.
-    //
-    // Find-then-act handles both unique keys explicitly. We look up by
-    // BOTH unique columns, prefer the snaptradeConnectionId match, fall
-    // back to the accessTokenHash match (and migrate it onto the new
-    // connId), and only CREATE when neither row exists.
     const accessTokenHash = `snaptrade:${connId}`;
-    const existingByConn = await prisma.item.findUnique({
-      where: { snaptradeConnectionId: connId },
+    const item = await prisma.$transaction(
+      async (tx) => {
+        const existingByConn = await tx.item.findUnique({
+          where: { snaptradeConnectionId: connId },
+        });
+        if (existingByConn) {
+          return tx.item.update({
+            where: { id: existingByConn.id },
+            data: { status: conn.disabled ? "ERROR" : "GOOD" },
+          });
+        }
+        const existingByHash = await tx.item.findUnique({
+          where: { accessTokenHash },
+        });
+        if (existingByHash) {
+          // Same access-token-hash placeholder, but the
+          // snaptradeConnectionId had drifted — claim that row for
+          // this connection.
+          return tx.item.update({
+            where: { id: existingByHash.id },
+            data: {
+              snaptradeConnectionId: connId,
+              status: conn.disabled ? "ERROR" : "GOOD",
+            },
+          });
+        }
+        return tx.item.create({
+          data: {
+            applicationId: application.id,
+            institutionId,
+            clientUserId: developer.id,
+            accessTokenHash, // placeholder, never used as a real access token
+            snaptradeConnectionId: connId,
+            status: conn.disabled ? "ERROR" : "GOOD",
+            products: ["investments", "balance", "identity"],
+          },
+        });
+      },
+      { isolationLevel: "Serializable", timeout: 10_000 },
+    );
+
+    // Defensive verification — confirm Item.id is queryable BEFORE
+    // any Account write tries to FK-reference it. If this misses,
+    // the cascade of "Account_itemId_fkey" failures we kept seeing
+    // happens. Reading our own write right after the transaction
+    // catches connection-pool inconsistency that would otherwise
+    // bite us silently at the next prisma call.
+    const itemConfirmed = await prisma.item.findUnique({
+      where: { id: item.id },
     });
-    const existingByHash =
-      existingByConn ??
-      (await prisma.item.findUnique({ where: { accessTokenHash } }));
-    let item;
-    if (existingByConn) {
-      item = await prisma.item.update({
-        where: { id: existingByConn.id },
-        data: { status: conn.disabled ? "ERROR" : "GOOD" },
+    if (!itemConfirmed) {
+      logger.error(
+        { developerId: developer.id, itemId: item.id, connId },
+        "snaptrade: Item write succeeded but is not queryable — connection pool inconsistency?",
+      );
+      errors.push({
+        step: "item_persistence",
+        accountId: connId,
+        message: "Item write didn't propagate; skipping accounts for this connection",
       });
-    } else if (existingByHash) {
-      // Same access-token-hash placeholder, but the snaptradeConnectionId
-      // had drifted — claim that row for this connection.
-      item = await prisma.item.update({
-        where: { id: existingByHash.id },
-        data: {
-          snaptradeConnectionId: connId,
-          status: conn.disabled ? "ERROR" : "GOOD",
-        },
-      });
-    } else {
-      item = await prisma.item.create({
-        data: {
-          applicationId: application.id,
-          institutionId,
-          clientUserId: developer.id,
-          accessTokenHash, // placeholder, never used as a real access token
-          snaptradeConnectionId: connId,
-          status: conn.disabled ? "ERROR" : "GOOD",
-          products: ["investments", "balance", "identity"],
-        },
-      });
+      continue;
     }
 
     // Accounts under this connection. Wrapped — listing accounts can
@@ -324,31 +354,65 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         acc.number ?? "0000",
       ).slice(-4);
 
-      // The account upsert is local DB only; if it throws something is
-      // very wrong (Postgres down, schema drift) — let it bubble so
-      // the route handler 500s and we notice. The PER-API-CALL failures
-      // below are the ones we isolate.
-      const account = await prisma.account.upsert({
-        where: { snaptradeAccountId: accId },
-        update: {
-          currentBalance: balance,
-          availableBalance: balance,
-          name: accountName,
-          mask: accountMask,
-        },
-        create: {
-          itemId: item.id,
-          snaptradeAccountId: accId,
-          name: accountName,
-          officialName: String(acc.institution_name ?? ""),
-          mask: accountMask,
-          type: "investment",
-          subtype: "brokerage",
-          currentBalance: balance,
-          availableBalance: balance,
-          isoCurrencyCode: "USD",
-        },
-      });
+      // Account upsert wrapped in a narrow transaction that:
+      //   1. Re-confirms the parent Item exists (defensive — the
+      //      itemConfirmed check above caught the connection-pool
+      //      window, but a long-running sync could still race a
+      //      concurrent disconnect that cascade-deletes the Item
+      //      mid-loop).
+      //   2. Catches FK conflicts inside the transaction so a single
+      //      bad account doesn't kill the whole sync — we record it
+      //      in errors[] and move on instead of bubbling to the
+      //      route handler.
+      let account: Awaited<ReturnType<typeof prisma.account.upsert>>;
+      try {
+        account = await prisma.$transaction(
+          async (tx) => {
+            const itemStillThere = await tx.item.findUnique({
+              where: { id: item.id },
+              select: { id: true },
+            });
+            if (!itemStillThere) {
+              throw new Error(`parent Item ${item.id} disappeared before Account write`);
+            }
+            return tx.account.upsert({
+              where: { snaptradeAccountId: accId },
+              update: {
+                currentBalance: balance,
+                availableBalance: balance,
+                name: accountName,
+                mask: accountMask,
+              },
+              create: {
+                itemId: item.id,
+                snaptradeAccountId: accId,
+                name: accountName,
+                officialName: String(acc.institution_name ?? ""),
+                mask: accountMask,
+                type: "investment",
+                subtype: "brokerage",
+                currentBalance: balance,
+                availableBalance: balance,
+                isoCurrencyCode: "USD",
+              },
+            });
+          },
+          { timeout: 10_000 },
+        );
+      } catch (err) {
+        logger.error(
+          { developerId: developer.id, itemId: item.id, accId, err: (err as Error).message },
+          "snaptrade: account upsert failed — skipping this account",
+        );
+        errors.push({
+          step: "account_upsert",
+          accountId: accId,
+          message: (err as Error).message,
+        });
+        // Skip everything for this account; positions/options/activities
+        // would all FK-fail without the Account row.
+        continue;
+      }
       accountsCount++;
 
       // --- Equity / mixed positions ---
