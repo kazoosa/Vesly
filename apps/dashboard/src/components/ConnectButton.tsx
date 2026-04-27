@@ -194,6 +194,25 @@ export function ConnectButton() {
   }
   useEffect(() => stopOverlayTimer, []);
 
+  // Navigation lock — only active while a real sync is in flight
+  // (overlay is open AND not yet ready). The browser's stock
+  // beforeunload prompt warns the user before they accidentally
+  // tab-close / refresh / hit Back mid-sync. Releases the moment
+  // overlayReady flips true OR the user dismisses the overlay.
+  // Critically: this never fires for the modal-open-then-close
+  // flow because that path doesn't open the overlay.
+  useEffect(() => {
+    if (!overlayOpen || overlayReady) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Modern browsers ignore the message but still show their
+      // own prompt as long as preventDefault was called.
+      e.returnValue = "Sync still in progress. Leaving now will lose your connection.";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [overlayOpen, overlayReady]);
+
   /**
    * Sync after a brokerage was just connected.
    *
@@ -523,16 +542,16 @@ export function ConnectButton() {
             setSnapLoginLink(null);
           }}
           onExit={() => {
-            // SnapTradeReact fires both onSuccess and onExit on a successful
-            // connect. Without the ref guard we'd kick off two parallel
-            // /sync calls (~25s each) on every connect. onExit without
-            // a successful onSuccess means the user closed the modal
-            // mid-flow, possibly after adding an extra account — sync
-            // anyway, but as a "first connect" so the same retry-once
-            // logic applies.
-            if (!syncFiredRef.current) {
-              afterSnapTradeConnect(true);
-            }
+            // The user closed the modal — either they completed the
+            // OAuth flow (in which case onSuccess already fired and
+            // started the sync) or they cancelled. In both cases we
+            // do NOT trigger a sync from here. A previous version
+            // optimistically synced on close-without-success in case
+            // the user added an extra account mid-flow, but that
+            // misfired on every "open then close immediately" with a
+            // ghost loading screen and a useless sync POST. If they
+            // genuinely added a brokerage and we missed it, the
+            // Refresh-now button on the Accounts page handles it.
             syncFiredRef.current = false;
             setSnapLoginLink(null);
           }}
