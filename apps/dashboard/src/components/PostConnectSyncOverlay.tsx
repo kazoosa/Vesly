@@ -17,7 +17,13 @@ export type StepState = "pending" | "in_progress" | "done" | "error";
 interface Steps {
   accounts: { state: StepState; count?: number };
   holdings: { state: StepState; count?: number };
-  transactions: { state: StepState; count?: number };
+  /** transactions can carry a retry attempt counter (1 of 3, 2 of 3...) */
+  transactions: {
+    state: StepState;
+    count?: number;
+    attempt?: number;
+    maxAttempts?: number;
+  };
 }
 
 interface Props {
@@ -34,11 +40,38 @@ interface Props {
   ready: boolean;
 }
 
-const STEP_LABELS: Record<StepKey, string> = {
-  accounts: "Listing your accounts",
-  holdings: "Pulling current holdings",
-  transactions: "Pulling transaction history",
-};
+// Step text adjusts based on state — pending reads as a future tense
+// ("Will list your accounts"), in-progress as live ("Listing your
+// accounts…"), done shows the result ("✓ Found 12 accounts").
+function stepLabel(
+  k: StepKey,
+  step: Steps[StepKey],
+): string {
+  const isDone = step.state === "done";
+  const isProg = step.state === "in_progress";
+  switch (k) {
+    case "accounts":
+      if (isDone) {
+        return `Found ${step.count ?? 0} account${step.count === 1 ? "" : "s"}`;
+      }
+      return isProg ? "Listing your accounts…" : "List your accounts";
+    case "holdings":
+      if (isDone) {
+        return `Fetched ${step.count ?? 0} holding${step.count === 1 ? "" : "s"}`;
+      }
+      return isProg ? "Pulling current holdings…" : "Pull current holdings";
+    case "transactions": {
+      if (isDone) {
+        return `Pulled ${step.count ?? 0} transaction${step.count === 1 ? "" : "s"}`;
+      }
+      const tx = step as Steps["transactions"];
+      if (isProg && tx.attempt && tx.maxAttempts) {
+        return `Pulling transaction history… (attempt ${tx.attempt} of ${tx.maxAttempts})`;
+      }
+      return isProg ? "Pulling transaction history…" : "Pull transaction history";
+    }
+  }
+}
 
 const STEP_NOTES: Record<StepKey, string> = {
   accounts: "Should be quick.",
@@ -95,12 +128,12 @@ export function PostConnectSyncOverlay({
           ))}
         </ol>
 
-        {!ready && elapsedSeconds > 60 && (
+        {!ready && elapsedSeconds >= 120 && (
           <div className="mt-5 text-[11px] text-fg-muted bg-bg-overlay p-2.5 rounded">
-            Still going after {fmtElapsed(elapsedSeconds)}. This is normal for
-            brokers like Robinhood the first time you connect — SnapTrade has
-            to pull years of history and cache it. A multi-minute wait isn't
-            broken.
+            This is taking longer than usual ({fmtElapsed(elapsedSeconds)}).
+            Some brokers — Robinhood especially — can take several minutes
+            on first sync. It's still working; we'll keep you here until
+            everything is in.
           </div>
         )}
 
@@ -126,27 +159,23 @@ function StepRow({
   step,
 }: {
   stepKey: StepKey;
-  step: { state: StepState; count?: number };
+  step: Steps[StepKey];
 }) {
-  const label = STEP_LABELS[stepKey];
+  const label = stepLabel(stepKey, step);
   const note = STEP_NOTES[stepKey];
   const Icon = stepIcon(step.state);
   const tone = stepTone(step.state);
+  // Suppress the "should be quick" subtitle on done rows — the
+  // checkmark + count line is enough.
+  const showNote = step.state !== "done";
   return (
     <li className="flex items-start gap-3">
       <div className={`flex-shrink-0 mt-0.5 ${tone}`}>{Icon}</div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-baseline justify-between gap-2">
-          <div className="text-sm text-fg-primary">{label}</div>
-          {step.count !== undefined && step.state === "done" && (
-            <div className="text-xs font-num text-fg-secondary">
-              {step.count.toLocaleString()}
-            </div>
-          )}
-        </div>
-        <div className="text-[11px] text-fg-muted mt-0.5">
-          {step.state === "in_progress" ? "Working…" : note}
-        </div>
+        <div className="text-sm text-fg-primary">{label}</div>
+        {showNote && (
+          <div className="text-[11px] text-fg-muted mt-0.5">{note}</div>
+        )}
       </div>
     </li>
   );

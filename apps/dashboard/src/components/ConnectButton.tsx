@@ -38,7 +38,12 @@ export function ConnectButton() {
   const [overlaySteps, setOverlaySteps] = useState<{
     accounts: { state: StepState; count?: number };
     holdings: { state: StepState; count?: number };
-    transactions: { state: StepState; count?: number };
+    transactions: {
+      state: StepState;
+      count?: number;
+      attempt?: number;
+      maxAttempts?: number;
+    };
   }>({
     accounts: { state: "pending" },
     holdings: { state: "pending" },
@@ -219,7 +224,7 @@ export function ConnectButton() {
       setOverlaySteps({
         accounts: { state: "in_progress" },
         holdings: { state: "in_progress" },
-        transactions: { state: "in_progress" },
+        transactions: { state: "in_progress", attempt: 1, maxAttempts: 2 },
       });
       setOverlayReady(false);
       setOverlayOpen(true);
@@ -262,6 +267,12 @@ export function ConnectButton() {
         // moment they click Continue).
         qc.invalidateQueries({ queryKey: ["accounts"] });
         qc.invalidateQueries({ queryKey: ["holdings"] });
+        // Bump the visible attempt counter so the user sees that
+        // we're retrying — not just hanging.
+        setOverlaySteps((prev) => ({
+          ...prev,
+          transactions: { state: "in_progress", attempt: 2, maxAttempts: 2 },
+        }));
         await new Promise((r) => setTimeout(r, 8_000));
         const final = await runOneSync();
         setSyncResult({
