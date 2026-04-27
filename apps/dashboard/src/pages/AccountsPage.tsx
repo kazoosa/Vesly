@@ -154,13 +154,10 @@ export function AccountsPage() {
               {wipeMock.isPending ? "Clearing…" : "Clear sample data"}
             </button>
           )}
-          <button
-            className="btn-ghost text-xs"
+          <RefreshButton
+            isPending={refresh.isPending}
             onClick={() => refresh.mutate()}
-            disabled={refresh.isPending}
-          >
-            {refresh.isPending ? "Refreshing…" : "↻ Refresh now"}
-          </button>
+          />
         </div>
       </div>
 
@@ -395,6 +392,53 @@ function DisconnectControl({
   return (
     <button type="button" className="btn-danger text-xs" onClick={onAskConfirm}>
       Disconnect
+    </button>
+  );
+}
+
+/**
+ * Refresh button with cold-start awareness.
+ *
+ * Render's free tier spins down after ~15 min of inactivity, so the
+ * first request after spindown takes 10-30s while the container
+ * boots. Without messaging, that looks like the button hung. We
+ * flip the label to "Waking up server…" after 5s of an in-flight
+ * refresh — only the FIRST refresh after a long idle should hit
+ * this, since useKeepAlive keeps the instance warm during normal
+ * use. Resets immediately when the response lands.
+ */
+function RefreshButton({
+  isPending,
+  onClick,
+}: {
+  isPending: boolean;
+  onClick: () => void;
+}) {
+  const [coldStart, setColdStart] = useState(false);
+  useEffect(() => {
+    if (!isPending) {
+      setColdStart(false);
+      return;
+    }
+    const t = window.setTimeout(() => setColdStart(true), 5_000);
+    return () => window.clearTimeout(t);
+  }, [isPending]);
+  return (
+    <button
+      className="btn-ghost text-xs"
+      onClick={onClick}
+      disabled={isPending}
+      title={
+        coldStart
+          ? "Backend was idle and is starting up. First sync after a quiet period takes longer."
+          : undefined
+      }
+    >
+      {isPending
+        ? coldStart
+          ? "Waking up server…"
+          : "Refreshing…"
+        : "↻ Refresh now"}
     </button>
   );
 }
