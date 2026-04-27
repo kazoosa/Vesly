@@ -8,6 +8,7 @@ import {
   isSnapTradeConfigured,
   createConnectionPortalUrl,
   syncDeveloper,
+  pollActivities,
   deleteSnapTradeConnection,
   ensureSnapTradeUser,
 } from "../services/snaptradeService.js";
@@ -48,6 +49,23 @@ router.post("/sync", requireDeveloper, async (req, res, next) => {
     const dev = await prisma.developer.findUnique({ where: { id: req.developerId! } });
     if (!dev) throw Errors.unauthorized();
     const out = await syncDeveloper(dev);
+    res.json(out);
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * Activities-only poll. The frontend background poller hits this on a
+ * 2-minute cadence after a fresh connect when transactions came back
+ * empty — SnapTrade's broker-side cache (especially Robinhood) takes
+ * minutes to warm. Cheap to call: skips positions/options/holdings.
+ */
+router.post("/poll-activities", requireDeveloper, async (req, res, next) => {
+  try {
+    const dev = await prisma.developer.findUnique({ where: { id: req.developerId! } });
+    if (!dev) throw Errors.unauthorized();
+    const out = await pollActivities(dev);
     res.json(out);
   } catch (e) {
     next(e);

@@ -902,6 +902,163 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
   };
 }
 
+/**
+ * Activities-only sync. Used by the post-connect background poller
+ * to pick up transactions once SnapTrade has warmed up its broker-
+ * side cache (Robinhood is famously slow on first sync). Skips
+ * positions, options, holdings — that data was already written by
+ * the original syncDeveloper call. Cheap to fire on a 2-minute
+ * cadence.
+ *
+ * Returns `{ transactionsAdded, totalReturned, fullySucceeded }`
+ * so the frontend poller can decide whether to dismiss its banner.
+ */
+export async function pollActivities(developer: Developer): Promise<{
+  transactionsAdded: number;
+  totalReturned: number;
+  fullySucceeded: boolean;
+}> {
+  const st = client();
+  const { userId, userSecret } = await ensureSnapTradeUser(developer);
+
+  // Find all this developer's items (connections) so we know which
+  // accounts to walk. Reuses the same data shape the read endpoints
+  // use — no new query, just inverse-iteration.
+  const application = await ensureInternalApplication(developer);
+  const items = await prisma.item.findMany({
+    where: { applicationId: application.id, snaptradeConnectionId: { not: null } },
+    include: { accounts: true },
+  });
+
+  if (items.length === 0) {
+    return { transactionsAdded: 0, totalReturned: 0, fullySucceeded: true };
+  }
+
+  let transactionsAdded = 0;
+  let totalReturned = 0;
+  let fullySucceeded = true;
+
+  // SnapTrade's getActivities is keyed on (userId, userSecret) and
+  // returns activities across ALL of the user's accounts in one
+  // call. We only need to fire it once per developer regardless of
+  // how many connections they have.
+  const today = new Date();
+  const startDate = new Date(today);
+  startDate.setFullYear(today.getFullYear() - 5);
+  const startStr = startDate.toISOString().slice(0, 10);
+  const endStr = today.toISOString().slice(0, 10);
+
+  const actCallRes = await safeCall(
+    "transactionsAndReporting.getActivities",
+    { developerId: developer.id, userSecret, startDate, endDate: today, source: "poller" },
+    () =>
+      st.transactionsAndReporting.getActivities({
+        userId,
+        userSecret,
+        startDate: startStr,
+        endDate: endStr,
+      }),
+  );
+
+  if (!actCallRes.ok) {
+    return { transactionsAdded: 0, totalReturned: 0, fullySucceeded: false };
+  }
+
+  const allActivities =
+    (actCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
+  totalReturned = allActivities.length;
+  logger.info(
+    {
+      developerId: developer.id,
+      totalReturned,
+      itemCount: items.length,
+      source: "poller",
+    },
+    "snaptrade activities poll fetched",
+  );
+
+  if (totalReturned === 0) {
+    return { transactionsAdded: 0, totalReturned: 0, fullySucceeded: true };
+  }
+
+  // Map every Account.snaptradeAccountId we know about to its local
+  // Account row so we can resolve the per-row accountId without
+  // additional DB hits inside the loop.
+  const accountByStId = new Map<string, { id: string }>();
+  for (const it of items) {
+    for (const a of it.accounts) {
+      if (a.snaptradeAccountId) accountByStId.set(a.snaptradeAccountId, { id: a.id });
+    }
+  }
+
+  for (const act of allActivities) {
+    const acctRef = act.account as { id?: string } | string | undefined;
+    const stAccId = typeof acctRef === "string" ? acctRef : acctRef?.id;
+    if (!stAccId) continue;
+    const localAcc = accountByStId.get(stAccId);
+    if (!localAcc) continue; // activity for an account we don't know — skip
+
+    try {
+      const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
+      const mapped = mapActivityType(rawType);
+      if (!mapped) continue;
+
+      const { ticker, description } = extractSnapTradeSymbol(act);
+      const price = safeNumber(act.price);
+      const units = safeNumber(act.units);
+      const amount = Math.abs(safeNumber(act.amount, price * units));
+      const fees = Math.abs(safeNumber(act.fee));
+      const date =
+        parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
+      const tradeDateKey = date.toISOString().slice(0, 10);
+
+      const actOption =
+        parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
+      const security = await upsertSecurity(ticker, description, price, undefined, actOption);
+
+      const rawId = String(act.id ?? "").trim();
+      const orderId =
+        rawId ||
+        `snaptrade_${stAccId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
+
+      // upsert is idempotent via snaptradeOrderId — re-poll won't
+      // create duplicates. We count the transaction only on insert,
+      // not update, so the "transactions added this poll" number is
+      // accurate.
+      const existing = await prisma.investmentTransaction.findUnique({
+        where: { snaptradeOrderId: orderId },
+        select: { id: true },
+      });
+      if (existing) continue;
+
+      await prisma.investmentTransaction.create({
+        data: {
+          accountId: localAcc.id,
+          securityId: security.id,
+          snaptradeOrderId: orderId,
+          date,
+          name: String(act.description ?? description ?? `${mapped} ${ticker}`),
+          type: mapped,
+          quantity: Math.abs(units),
+          price,
+          amount,
+          fees,
+          isoCurrencyCode: extractCurrency(act.currency) ?? "USD",
+        },
+      });
+      transactionsAdded++;
+    } catch (err) {
+      logger.warn(
+        { err, source: "poller", actId: String(act.id ?? "") },
+        "snaptrade poll: failed to upsert activity row; continuing",
+      );
+      fullySucceeded = false;
+    }
+  }
+
+  return { transactionsAdded, totalReturned, fullySucceeded };
+}
+
 export async function deleteSnapTradeConnection(developer: Developer, connectionId: string) {
   const st = client();
   const { userId, userSecret } = await ensureSnapTradeUser(developer);
