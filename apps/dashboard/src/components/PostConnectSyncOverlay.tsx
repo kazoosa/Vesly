@@ -1,8 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd } from "./money";
+
+// Lazy-load the 3D scene so its ~150KB three.js bundle only ships
+// when the overlay actually mounts. The rest of the dashboard never
+// pays the bundle cost.
+const SpaceScene = lazy(() => import("./SpaceScene"));
+
+/** Detect prefers-reduced-motion at module scope so we don't re-query
+ *  per render. We DO re-evaluate on each overlay open via the hook
+ *  below, in case the user toggled the setting between sessions. */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return reduced;
+}
 
 /**
  * Premium full-screen sync overlay shown after a brokerage connection
@@ -37,13 +60,17 @@ interface Steps {
     count?: number;
     attempt?: number;
     maxAttempts?: number;
-    /** True when the foreground sync returned 0 transactions and the
-     *  overlay is now polling SnapTrade in a tight loop, waiting for
-     *  the broker-side cache to warm. The bar locks at 90% with a
-     *  pulse, the copy switches to "Waiting for your broker…", and
-     *  the user stays on the overlay. The escape hatch only appears
-     *  after 10 minutes (see `onSkipWait` below). */
+    /** Phase 2: foreground sync returned 0 transactions and the overlay
+     *  is now polling SnapTrade waiting for the broker-side cache to
+     *  warm. Bar holds at 40%, count-up timer + rotating context copy.
+     *  The escape hatch button appears after 10 minutes (see `onSkipWait`). */
     waitingForBroker?: boolean;
+    /** Phase 3: poll returned a non-zero count, the backend is now
+     *  writing those transactions to the DB. Bar quickly animates from
+     *  40% → 100% over the (short) write window. Set true the moment
+     *  the parent sees `transactionsAdded > 0`; cleared when ready
+     *  flips true. */
+    writing?: boolean;
   };
 }
 
@@ -66,42 +93,51 @@ interface Props {
   onSkipWait?: () => void;
 }
 
-// Per-step weight contribution to overall progress. Sum to 100.
-//   connecting   10
-//   accounts     15  (cumulative 25)
-//   holdings     25  (cumulative 50)
-//   transactions 40  (cumulative 90 — the last 10 is "wrap up & resolve")
+// Per-step weight contribution to overall progress. Sum to 40 — the
+// progress bar reaches 40% by the end of Phase 1 (initial sync),
+// holds there through Phase 2 (broker wait, which is a known-unknown
+// duration so we don't fake-advance), then animates 40→100 during
+// Phase 3 (DB writes). The old "fill to 90% during wait" pattern
+// was dishonest and felt jarring when the bar reset.
+//   connecting   5
+//   accounts     5   (cumulative 10)
+//   holdings    10   (cumulative 20)
+//   transactions 20  (cumulative 40)
 const STEP_WEIGHTS: Record<StepKey, number> = {
-  connecting: 10,
-  accounts: 15,
-  holdings: 25,
-  transactions: 40,
+  connecting: 5,
+  accounts: 5,
+  holdings: 10,
+  transactions: 20,
 };
 
 const STEP_ORDER: StepKey[] = ["connecting", "accounts", "holdings", "transactions"];
 
+/**
+ * Three phases the bar honors:
+ *   Phase 1 (initial sync)        → fills to 40%
+ *   Phase 2 (waiting for broker)  → holds at 40% (no fake advance)
+ *   Phase 3 (writing transactions) → 40% → 100%
+ *   Phase 4 (ready)               → 100%
+ */
 function targetPercent(steps: Steps, ready: boolean): number {
   if (ready) return 100;
-  // Waiting on the broker-side cache: hold at 90 (everything before
-  // transactions is done; transactions are pending the broker). The
-  // bar pulses on top of this constant — see WaitingPulse below.
-  if (steps.transactions.waitingForBroker) return 90;
+  if (steps.transactions.writing) return 100; // Phase 3 — animate to 100 over short window
+  if (steps.transactions.waitingForBroker) return 40; // Phase 2 — hold
+  // Phase 1 — sum of completed step weights, with half-credit for the
+  // active step so the bar isn't frozen between checkpoints.
   let pct = 0;
   for (const k of STEP_ORDER) {
     const s = steps[k];
     if (s.state === "done" || s.state === "error") {
       pct += STEP_WEIGHTS[k];
     } else if (s.state === "in_progress") {
-      // Show partial credit for the active step so the bar isn't
-      // frozen between checkpoints. Half the weight reads as
-      // "we're working on this" without overpromising.
       pct += STEP_WEIGHTS[k] / 2;
       break;
     } else {
       break;
     }
   }
-  return Math.min(100, pct);
+  return Math.min(40, pct);
 }
 
 function stepLabel(k: StepKey, step: Steps[StepKey]): string {
@@ -134,6 +170,10 @@ function stepLabel(k: StepKey, step: Steps[StepKey]): string {
       if (isDone) {
         return `${s.count ?? 0} transaction${s.count === 1 ? "" : "s"} loaded`;
       }
+      if (s.writing) {
+        const n = s.count ?? 0;
+        return `Writing ${n} transaction${n === 1 ? "" : "s"}…`;
+      }
       if (s.waitingForBroker) {
         return "Waiting for your broker to prepare transaction history…";
       }
@@ -146,11 +186,38 @@ function stepLabel(k: StepKey, step: Steps[StepKey]): string {
   }
 }
 
-function fmtEta(seconds: number): string {
-  if (seconds < 10) return "Almost done…";
-  if (seconds < 60) return `Estimated time remaining: ~${Math.round(seconds)} seconds`;
-  const m = Math.round(seconds / 60);
-  return `Estimated time remaining: ~${m} minute${m === 1 ? "" : "s"}`;
+/** Format the count-up timer shown during Phase 2 (broker wait).
+ *  Under 60s shows seconds; over 60s shows M:SS. */
+function fmtCountUp(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `0:${s.toString().padStart(2, "0")}`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
+/** Rotating context copy below the count-up timer. Honest about
+ *  what's happening at each stage of the wait — no fake numbers. */
+function waitContextCopy(elapsedSeconds: number): string {
+  if (elapsedSeconds < 30) return "Connecting to your broker…";
+  if (elapsedSeconds < 90) return "Your broker is preparing your transaction history…";
+  if (elapsedSeconds < 180) return "Robinhood typically takes 1–3 minutes on first connect — you're almost there.";
+  return "This is taking longer than usual. Still working — some brokers are slow on first connect.";
+}
+
+/** Phase 3 ETA: only shown while we're writing rows to the DB. We
+ *  estimate from the elapsed write time and a rolling rate. Guards
+ *  every edge case (NaN, zero, negative). */
+function fmtPhase3Eta(remainingSeconds: number): string {
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
+    return "Almost done…";
+  }
+  if (remainingSeconds < 5) return "Almost done…";
+  if (remainingSeconds < 60) {
+    return `About ${Math.round(remainingSeconds)} seconds remaining`;
+  }
+  const m = Math.round(remainingSeconds / 60);
+  return `About ${m} minute${m === 1 ? "" : "s"} remaining`;
 }
 
 export function PostConnectSyncOverlay({
@@ -161,17 +228,25 @@ export function PostConnectSyncOverlay({
   ready,
   onSkipWait,
 }: Props) {
-  const waitingForBroker = Boolean(steps.transactions.waitingForBroker) && !ready;
-  // Escape hatch: 10 minutes is a long wait. Some brokers really do
-  // take that long on first connect — but past that point the user
-  // has earned the right to bail without losing their seat. Showing
-  // the button earlier would tempt people into a worse experience
-  // (no transactions visible) when waiting another minute would
-  // have resolved the sync cleanly.
+  // Phase derivation — see the doc on `Steps` for what each flag means.
+  // Phase 1 = !waitingForBroker && !writing && !ready
+  // Phase 2 = waitingForBroker && !ready
+  // Phase 3 = writing && !ready
+  // Phase 4 = ready
+  const writing = Boolean(steps.transactions.writing) && !ready;
+  const waitingForBroker =
+    Boolean(steps.transactions.waitingForBroker) && !ready && !writing;
+  // Escape hatch only during Phase 2, after 10 minutes.
   const showEscapeHatch =
     waitingForBroker && elapsedSeconds >= 600 && !!onSkipWait;
-  // Force re-render every second so the ETA + elapsed counter
-  // recompute without needing the parent to push them.
+
+  // Reduced motion: skip the 3D scene entirely. Falls back to the
+  // gradient + blur backdrop the previous version used.
+  const reducedMotion = usePrefersReducedMotion();
+  const sceneActive = (waitingForBroker || writing) && !reducedMotion;
+
+  // Force re-render every second so the count-up timer + rotating
+  // copy + ETA recompute without the parent pushing updates.
   const [, force] = useState(0);
   useEffect(() => {
     if (!open) return;
@@ -179,11 +254,43 @@ export function PostConnectSyncOverlay({
     return () => clearInterval(t);
   }, [open]);
 
-  // Animated bar: we keep a "displayed" percent in state and ease it
-  // toward the target on every tick. This gives a continuous fill
-  // rather than the bar jumping between 25/50/90/100. Eased at ~30%
-  // per frame so big jumps still feel responsive (e.g. 0→25 lands in
-  // <300ms) while the steady-state crawl is smooth.
+  // Track when Phase 2 started so the count-up timer ticks from 0
+  // when the wait begins, not from when the user opened the overlay.
+  const phase2StartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (waitingForBroker && phase2StartRef.current === null) {
+      phase2StartRef.current = Date.now();
+    }
+    if (!waitingForBroker) {
+      phase2StartRef.current = null;
+    }
+  }, [waitingForBroker]);
+  const phase2Seconds = useMemo(() => {
+    if (!waitingForBroker || phase2StartRef.current === null) return 0;
+    return Math.floor((Date.now() - phase2StartRef.current) / 1000);
+    // Re-runs on the per-second force-render above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingForBroker, force]);
+
+  // Track when Phase 3 (writing) started so we can compute a real
+  // ETA from elapsed / progress. The DB writes are 3-4s for ~900
+  // rows so the ETA mostly says "Almost done…" — but we still
+  // compute it correctly so the math holds for larger first-syncs.
+  const phase3StartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (writing && phase3StartRef.current === null) {
+      phase3StartRef.current = Date.now();
+    }
+    if (!writing) {
+      phase3StartRef.current = null;
+    }
+  }, [writing]);
+
+  // Animated bar: ease the displayed percent toward the target. The
+  // 0.18 per-frame catch-up is fast enough that big jumps (0→40,
+  // 40→100) feel responsive and small ones are smooth. Phase 2's
+  // hold at 40% means the bar literally doesn't move during the
+  // broker wait — by design, no fake advance.
   const targetPct = targetPercent(steps, ready);
   const [displayPct, setDisplayPct] = useState(0);
   const rafRef = useRef<number | null>(null);
@@ -220,9 +327,6 @@ export function PostConnectSyncOverlay({
       return;
     }
     if (!ready) return;
-    // Wait for the displayed bar to actually reach 100 before we
-    // start the dismiss countdown — otherwise a fast-completing
-    // sync would dismiss before the user saw the bar fill.
     if (displayPct < 99.5) return;
     const holdMs = 500;
     const fadeMs = 400;
@@ -234,22 +338,46 @@ export function PostConnectSyncOverlay({
     };
   }, [open, ready, displayPct, onClose]);
 
+  // "Drag to explore ✦" hint fades out 8s after the scene activates.
+  const [hintVisible, setHintVisible] = useState(true);
+  useEffect(() => {
+    if (!sceneActive) {
+      setHintVisible(true);
+      return;
+    }
+    const t = window.setTimeout(() => setHintVisible(false), 8_000);
+    return () => window.clearTimeout(t);
+  }, [sceneActive]);
+
   if (!open) return null;
 
-  // ETA = (elapsed / pct) * (100 - pct), expressed in seconds. Floors
-  // at "Almost done…" once we're under 10s remaining or >=95% so the
-  // last stretch doesn't read as misleading.
-  const etaSeconds =
-    displayPct >= 95 || displayPct < 5
-      ? 0
-      : (elapsedSeconds / displayPct) * (100 - displayPct);
-  const etaText = ready
-    ? "Wrapping up…"
-    : displayPct < 5
-      ? "Calculating…"
-      : fmtEta(etaSeconds);
+  // Phase 3 ETA. We model the bar as advancing 40 → 100 over the
+  // write window: progress along that 60-point span is
+  // (displayPct - 40) / 60. ETA = elapsed / progress - elapsed.
+  let phase3EtaText = "";
+  if (writing && phase3StartRef.current !== null) {
+    const elapsedMs = Date.now() - phase3StartRef.current;
+    const elapsedSec = elapsedMs / 1000;
+    const progress = Math.max(0, (displayPct - 40) / 60);
+    if (progress < 0.05 || elapsedSec < 1) {
+      phase3EtaText = "Almost done…";
+    } else {
+      const total = elapsedSec / progress;
+      const remaining = total - elapsedSec;
+      phase3EtaText = fmtPhase3Eta(remaining);
+    }
+  }
 
-  const veryLong = elapsedSeconds >= 120 && !ready;
+  // Backdrop choice: scene takes over when active. The card sits on
+  // top either way and keeps its drop shadow.
+  const backdropStyle = sceneActive
+    ? { background: "#020818" }
+    : {
+        background:
+          "radial-gradient(circle at 50% 35%, rgb(var(--bg-base) / 0.85), rgb(var(--bg-base) / 0.96))",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)" as string,
+      };
 
   return (
     <div
@@ -260,26 +388,38 @@ export function PostConnectSyncOverlay({
       className={`fixed inset-0 z-[100] grid place-items-center p-4 ${
         fadingOut ? "animate-fade-out" : "animate-fade-in"
       }`}
-      style={{
-        background:
-          "radial-gradient(circle at 50% 35%, rgb(var(--bg-base) / 0.85), rgb(var(--bg-base) / 0.96))",
-        backdropFilter: "blur(14px)",
-        WebkitBackdropFilter: "blur(14px)",
-      }}
+      style={backdropStyle}
     >
+      {sceneActive && (
+        <Suspense fallback={null}>
+          <SpaceScene />
+        </Suspense>
+      )}
+
+      {sceneActive && hintVisible && (
+        <div
+          className="absolute bottom-4 right-4 z-[1] text-white pointer-events-none transition-opacity duration-700"
+          style={{
+            opacity: 0.4,
+            fontSize: 12,
+          }}
+          aria-hidden
+        >
+          drag to explore ✦
+        </div>
+      )}
+
       <div
-        className="card w-full max-w-md overflow-hidden animate-scale-in"
+        className="card w-full max-w-md overflow-hidden animate-scale-in relative z-[1]"
         style={{
           boxShadow:
             "0 24px 60px -12px rgb(0 0 0 / 0.45), 0 8px 20px -6px rgb(0 0 0 / 0.25)",
         }}
       >
-        {/* Progress bar — anchored to the very top of the card. Two
-            layers: a static track + the animated fill. While we're
-            waiting on the broker-side cache the fill pulses
-            (opacity oscillation) instead of using the marching
-            shimmer — communicates "still happening, not stuck"
-            without faking forward motion. */}
+        {/* Progress bar. During Phase 2 we hold at 40% with a pulse
+            (no shimmer — that would fake forward motion the wait
+            doesn't have). During phases 1/3 the shimmer reads as
+            "actively making progress." */}
         <div className="relative h-1 bg-bg-overlay">
           <div
             className={`absolute inset-y-0 left-0 bg-fg-primary transition-[width] duration-150 ease-out ${
@@ -314,9 +454,11 @@ export function PostConnectSyncOverlay({
           <p className="text-xs text-fg-secondary mb-5 leading-relaxed">
             {ready
               ? "Your data is in. Returning you to the dashboard."
-              : waitingForBroker
-                ? "Your accounts and holdings are saved. Now we're waiting on your broker to release the transaction history — this can take a few minutes on first connect."
-                : "Hang tight — we're pulling everything from your broker. This window will close on its own."}
+              : writing
+                ? "Loading your transactions into the dashboard…"
+                : waitingForBroker
+                  ? "Your accounts and holdings are saved. Now we're waiting on your broker to release the transaction history — this can take a few minutes on first connect."
+                  : "Hang tight — we're pulling everything from your broker. This window will close on its own."}
           </p>
 
           {/* Steps */}
@@ -329,30 +471,32 @@ export function PostConnectSyncOverlay({
           {/* Live portfolio preview — only while waiting on the broker.
               Accounts and holdings have already been written to the DB
               by the foreground sync; showing them here turns "2 minutes
-              of waiting" into "2 minutes of seeing your real data."
-              The broker-side wait for transactions stays untouched. */}
+              of waiting" into "2 minutes of seeing your real data." */}
           {waitingForBroker && <PortfolioPreview />}
 
-          {/* ETA / long-sync message */}
+          {/* Footer area: phase-specific copy. */}
           <div className="mt-5 pt-4 border-t border-border-subtle space-y-3">
             {waitingForBroker ? (
+              // Phase 2: count-up timer + rotating context copy. No ETA.
               <>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-fg-muted">
-                    Checking every 60 seconds — we'll dismiss this the
-                    moment your transactions arrive.
-                  </span>
-                  <span className="text-fg-fainter font-num tabular-nums whitespace-nowrap">
-                    {fmtElapsed(elapsedSeconds)}
-                  </span>
+                <div className="flex flex-col items-center text-center gap-1.5">
+                  <div
+                    className="font-num tabular-nums text-2xl text-fg-secondary"
+                    aria-label={`Waiting ${phase2Seconds} seconds`}
+                  >
+                    Waiting… {fmtCountUp(phase2Seconds)}
+                  </div>
+                  <div className="text-[11px] text-fg-muted leading-relaxed max-w-sm">
+                    {waitContextCopy(phase2Seconds)}
+                  </div>
                 </div>
                 {showEscapeHatch && (
                   <div className="pt-1">
-                    <p className="text-[11px] text-fg-muted mb-2 leading-relaxed">
-                      Still waiting after {Math.round(elapsedSeconds / 60)} minutes.
-                      You can continue without transactions and we'll
-                      load them in the background — but expect them to
-                      take a while longer to appear.
+                    <p className="text-[11px] text-fg-muted mb-2 leading-relaxed text-center">
+                      Still waiting after {Math.round(phase2Seconds / 60)} minutes.
+                      You can continue without transactions and we'll load them
+                      in the background — but expect them to take a while
+                      longer to appear.
                     </p>
                     <button
                       type="button"
@@ -364,21 +508,23 @@ export function PostConnectSyncOverlay({
                   </div>
                 )}
               </>
-            ) : veryLong ? (
-              <p className="text-[11px] text-fg-secondary leading-relaxed">
-                <span className="font-semibold text-amber-500">
-                  This is taking longer than usual.
-                </span>{" "}
-                Some brokers are slow on the first sync — Robinhood
-                especially. Hang tight, we'll keep going until your
-                data is in.
-              </p>
-            ) : (
+            ) : writing ? (
+              // Phase 3: real ETA computed from elapsed / progress.
               <div className="flex items-center justify-between gap-2 text-[11px]">
-                <span className="text-fg-muted">{etaText}</span>
+                <span className="text-fg-muted">{phase3EtaText}</span>
                 <span className="text-fg-fainter font-num tabular-nums">
-                  {fmtElapsed(elapsedSeconds)}
+                  {Math.round(displayPct)}%
                 </span>
+              </div>
+            ) : ready ? (
+              <div className="text-[11px] text-fg-muted text-center">
+                Wrapping up…
+              </div>
+            ) : (
+              // Phase 1: simple step list above is enough — no ETA, no
+              // timer. This phase resolves in 5-15s.
+              <div className="text-[11px] text-fg-muted text-center">
+                {fmtElapsed(elapsedSeconds)}
               </div>
             )}
           </div>

@@ -4,6 +4,7 @@ import { SnapTradeReact } from "snaptrade-react";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { PostConnectSyncOverlay, type StepState } from "./PostConnectSyncOverlay";
+import { useToast } from "./Toast";
 
 declare global {
   interface Window {
@@ -23,6 +24,7 @@ const LINK_UI_URL = (import.meta.env.VITE_LINK_UI_URL as string | undefined) ?? 
 export function ConnectButton() {
   const { accessToken, developer } = useAuth();
   const qc = useQueryClient();
+  const toast = useToast();
   const fetcher = apiFetch(() => accessToken);
   // Used by the wait-for-broker loop to bail out without saving the
   // (still-empty) state when the user clicks "Continue without
@@ -49,6 +51,7 @@ export function ConnectButton() {
       attempt?: number;
       maxAttempts?: number;
       waitingForBroker?: boolean;
+      writing?: boolean;
     };
   }>({
     connecting: { state: "pending" },
@@ -421,6 +424,23 @@ export function ConnectButton() {
             fully_succeeded: out.fully_succeeded,
           });
           if (firstConnect) {
+            // Phase 3 — writing transactions. The backend already
+            // wrote the rows by the time pollUntilTransactionsArrive
+            // resolved (the response carries the post-write count),
+            // but we hold a brief client-side animation here so the
+            // user sees the bar advance from 40% to 100% with the
+            // count in view. 1.2s is long enough to read; the
+            // overlay's auto-dismiss (500ms hold + 400ms fade) takes
+            // over from there.
+            setOverlaySteps((prev) => ({
+              ...prev,
+              transactions: {
+                state: "in_progress",
+                writing: true,
+                count: polled.transactionsAdded,
+              },
+            }));
+            await new Promise((r) => setTimeout(r, 1_200));
             setOverlaySteps((prev) => ({
               ...prev,
               transactions: {
@@ -428,6 +448,15 @@ export function ConnectButton() {
                 count: polled.transactionsAdded,
               },
             }));
+            // Success toast — fires now so the toast queue is primed
+            // by the time the overlay fades. The user sees the same
+            // count one more time in their normal toast position.
+            toast.show({
+              message: `✓ All done — ${polled.transactionsAdded} transaction${
+                polled.transactionsAdded === 1 ? "" : "s"
+              } loaded`,
+              durationMs: 5_000,
+            });
           }
         }
         // If polled is null the user clicked "Continue without
