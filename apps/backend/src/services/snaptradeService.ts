@@ -215,6 +215,13 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
   let rawActivitiesFetched = 0;
   let skippedUnknownTotal = 0;
   const skippedUnknownLabels = new Set<string>();
+  // Map every Account.snaptradeAccountId we touch this sync to its
+  // local Account row so the single hoisted activities call (below)
+  // can dispatch each row to the correct local account without
+  // additional DB hits. SnapTrade's getActivities returns ALL of a
+  // user's activities regardless of account filter; iterating per
+  // account inside the loop wasted (N-1) heavy network calls.
+  const accountByStId = new Map<string, { id: string }>();
 
   if (!connectionsRes.ok) {
     errors.push({
@@ -428,21 +435,41 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         continue;
       }
       accountsCount++;
+      // Register the local account by its SnapTrade ID so the hoisted
+      // activities call (after both loops complete) can dispatch
+      // rows back to the right local Account.id.
+      accountByStId.set(accId, { id: account.id });
 
-      // --- Equity / mixed positions ---
-      // Wrapped: a single broker returning 500 on positions for one
-      // account must not stop us from pulling activities + options for
-      // that same account, OR positions for the next account.
-      const posCallRes = await safeCall(
-        "accountInformation.getUserAccountPositions",
-        { developerId: developer.id, accountId: accId, userSecret },
-        () =>
-          st.accountInformation.getUserAccountPositions({
-            userId,
-            userSecret,
-            accountId: accId,
-          }),
-      );
+      // --- Equity / mixed positions + options (in parallel) ---
+      // Positions and options are independent SnapTrade endpoints —
+      // neither response feeds the other's request. Fire both in
+      // parallel and await the pair so the slower one sets the lower
+      // bound. A single broker returning 500 on positions for one
+      // account must not stop us from pulling options for the same
+      // account, OR positions for the next account, so failures from
+      // either fan-out leg are still handled separately below.
+      const [posCallRes, optsCallRes] = await Promise.all([
+        safeCall(
+          "accountInformation.getUserAccountPositions",
+          { developerId: developer.id, accountId: accId, userSecret },
+          () =>
+            st.accountInformation.getUserAccountPositions({
+              userId,
+              userSecret,
+              accountId: accId,
+            }),
+        ),
+        safeCall(
+          "options.listOptionHoldings",
+          { developerId: developer.id, accountId: accId, userSecret },
+          () =>
+            st.options.listOptionHoldings({
+              userId,
+              userSecret,
+              accountId: accId,
+            }),
+        ),
+      ]);
 
       let positions: Array<Record<string, unknown>> = [];
       if (posCallRes.ok) {
@@ -550,7 +577,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         );
       }
 
-      // --- Dedicated options endpoint ---
+      // --- Dedicated options endpoint (response handling) ---
       // SnapTrade exposes options via TWO different endpoints depending
       // on the broker:
       //   1. listOptionHoldings (the dedicated options API) — used by
@@ -558,20 +585,10 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       //   2. getUserAccountPositions (the unified positions API) — used
       //      by Fidelity and a few others; option rows come back inline
       //      alongside equities
-      // We were only calling #2. Brokers that use #1 returned zero
-      // option holdings, which is exactly the user's report.
-      // Now we call BOTH and let the (accountId, securityId) upsert
-      // dedup any contracts that show up in both (rare, but cheap).
-      const optsCallRes = await safeCall(
-        "options.listOptionHoldings",
-        { developerId: developer.id, accountId: accId, userSecret },
-        () =>
-          st.options.listOptionHoldings({
-            userId,
-            userSecret,
-            accountId: accId,
-          }),
-      );
+      // We call BOTH and let the (accountId, securityId) upsert dedup
+      // any contracts that show up in both (rare, but cheap). The
+      // network round-trip already fired in parallel with positions
+      // above; here we just process the response.
       let optionPositions: Array<Record<string, unknown>> = [];
       if (optsCallRes.ok) {
         optionPositions =
@@ -670,83 +687,84 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         }
       }
 
-      // --- Orders / activities ---
-      // SnapTrade's getActivities defaults to a short rolling window when
-      // no dates are passed, which drops most historical dividends and
-      // transactions. Pass an explicit lookback so first-time syncs pull
-      // in the full user history.
-      //
-      // Notes from debugging Robinhood returning zero:
-      //  * The `accounts` parameter is a comma-separated string of account
-      //    IDs. Some SnapTrade SDK versions reject a single bare ID and
-      //    return [] silently. Omitting the filter and pulling all
-      //    activities for the user (we already iterate per-account, so
-      //    we filter client-side via act.account.id) is more reliable.
-      //  * Multi-year first-time pulls were historically observed to return
-      //    [] for Robinhood. The retry-on-empty in the connect flow now
-      //    handles that case (giving SnapTrade time to warm its cache),
-      //    so we default the window to 5 years to backfill the full
-      //    history users actually have. Override with SNAPTRADE_HISTORY_YEARS
-      //    if you need a wider or narrower window.
-      const years = parseInt(process.env.SNAPTRADE_HISTORY_YEARS ?? "5", 10);
-      const today = new Date();
-      const startDate = new Date(today);
-      startDate.setFullYear(today.getFullYear() - years);
-      const startStr = startDate.toISOString().slice(0, 10);
-      const endStr = today.toISOString().slice(0, 10);
-      // Log BEFORE the call too — so if SnapTrade hangs and never
-      // returns, we still see in Render logs that we tried, with
-      // the exact params used. Greppable as "snaptrade activities
-      // requesting".
-      const actStartedAt = Date.now();
-      logger.info(
-        {
-          accountId: accId,
+      // Activities are fetched once for the whole developer after
+      // both loops complete — see the hoisted block below. SnapTrade's
+      // getActivities returns ALL of the user's activities regardless
+      // of account filter, so per-account calls in here were just
+      // duplicating work.
+    }
+  }
+
+  // --- Orders / activities (single hoisted call) ---
+  //
+  // SnapTrade's getActivities returns ALL of the user's activities
+  // across every connected brokerage in a single response. Earlier
+  // this lived inside the per-account loop above and fired (N
+  // accounts) times — wasted N-1 heavy round-trips, especially
+  // painful on first connect when the broker-side cache is also
+  // warming and each call is slow. Same pattern as pollActivities()
+  // already uses for the background poll endpoint.
+  //
+  // Activity rows route to local accounts via accountByStId, built
+  // as the loops above wrote each Account row.
+  //
+  // Notes from debugging Robinhood returning zero:
+  //  * Some SnapTrade SDK versions reject a single bare account ID
+  //    in the `accounts` param and return [] silently. Calling
+  //    without the filter and dispatching client-side is more
+  //    reliable.
+  //  * Multi-year first-time pulls were historically observed to
+  //    return [] for Robinhood. The connect-flow's poll loop
+  //    handles that case (waiting for SnapTrade's broker-side
+  //    cache to warm), so we default the window to 5 years to
+  //    backfill the full history users actually have. Override
+  //    with SNAPTRADE_HISTORY_YEARS if you need a wider or
+  //    narrower window.
+  if (accountByStId.size > 0) {
+    const years = parseInt(process.env.SNAPTRADE_HISTORY_YEARS ?? "5", 10);
+    const today = new Date();
+    const startDate = new Date(today);
+    startDate.setFullYear(today.getFullYear() - years);
+    const startStr = startDate.toISOString().slice(0, 10);
+    const endStr = today.toISOString().slice(0, 10);
+    const actStartedAt = Date.now();
+    logger.info(
+      {
+        developerId: developer.id,
+        userId,
+        accountCount: accountByStId.size,
+        startDate: startStr,
+        endDate: endStr,
+        historyYears: years,
+      },
+      "snaptrade activities requesting",
+    );
+    const actCallRes = await safeCall(
+      "transactionsAndReporting.getActivities",
+      { developerId: developer.id, userSecret, startDate, endDate: today },
+      () =>
+        st.transactionsAndReporting.getActivities({
           userId,
+          userSecret,
           startDate: startStr,
           endDate: endStr,
-          historyYears: years,
-        },
-        "snaptrade activities requesting",
-      );
-      const actCallRes = await safeCall(
-        "transactionsAndReporting.getActivities",
-        { developerId: developer.id, accountId: accId, userSecret, startDate, endDate: today },
-        () =>
-          st.transactionsAndReporting.getActivities({
-            userId,
-            userSecret,
-            startDate: startStr,
-            endDate: endStr,
-          }),
-      );
+        }),
+    );
 
-      if (!actCallRes.ok) {
-        errors.push({
-          step: "activities",
-          accountId: accId,
-          message: actCallRes.error,
-          status: actCallRes.status,
-        });
-        // Move to the next account — positions/options for THIS account
-        // already wrote, and the next account's data is independent.
-        continue;
-      }
-
+    if (!actCallRes.ok) {
+      errors.push({
+        step: "activities",
+        message: actCallRes.error,
+        status: actCallRes.status,
+      });
+    } else {
       const allActivities =
         (actCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
-      // Client-side filter to this account, since we dropped the server filter.
-      const activities = allActivities.filter((a) => {
-        const acctRef = a.account as { id?: string } | string | undefined;
-        const id = typeof acctRef === "string" ? acctRef : acctRef?.id;
-        return !id || id === accId; // include rows with no account ref (cash divs etc.)
-      });
-      rawActivitiesFetched += activities.length;
+      rawActivitiesFetched = allActivities.length;
       logger.info(
         {
-          accountId: accId,
+          developerId: developer.id,
           userId,
-          activityCount: activities.length,
           totalReturned: allActivities.length,
           elapsedMs: Date.now() - actStartedAt,
           startDate: startStr,
@@ -755,88 +773,171 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
         "snaptrade activities fetched",
       );
 
-      let skippedUnknown = 0;
-      for (const act of activities) {
-        // Wrap the entire per-row processing so a single malformed
-        // activity (unexpected currency shape, weird symbol nesting,
-        // etc.) can never abort the rest of the rows for this account.
-        try {
-          const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
-          const mapped = mapActivityType(rawType);
-          if (!mapped) {
-            // Don't silently drop — log the raw label so ops can see what
-            // the classifier is missing and we can extend coverage.
-            skippedUnknown++;
-            skippedUnknownTotal++;
-            if (rawType) {
-              skippedUnknownLabels.add(rawType);
-              logger.warn({ rawType, accountId: accId }, "snaptrade: unrecognised activity type");
-            }
-            continue;
-          }
-
-          const { ticker, description } = extractSnapTradeSymbol(act);
-          const price = safeNumber(act.price);
-          const units = safeNumber(act.units);
-          const amount = Math.abs(safeNumber(act.amount, price * units));
-          const fees = Math.abs(safeNumber(act.fee));
-
-          // Prefer trade_date; fall back to settlement_date; last resort
-          // is `new Date()` so we never fail outright (a misdated row is
-          // better than losing the row entirely — operator can reconcile).
-          const date =
-            parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
-          const tradeDateKey = date.toISOString().slice(0, 10);
-
-          // Option detection on activity rows so a BUY/SELL on an option
-          // contract creates the OptionContract row alongside the Security
-          // — same path the position-sync uses. parseOptionSymbol returns
-          // null for plain equity tickers, no-op for those.
-          const actOption =
-            parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
-          const security = await upsertSecurity(ticker, description, price, undefined, actOption);
-
-          // Use SnapTrade's id when present; fall back to a deterministic
-          // composite so we never silently drop rows and re-syncs remain
-          // idempotent via the unique snaptradeOrderId constraint.
-          const rawId = String(act.id ?? "").trim();
-          const orderId =
-            rawId ||
-            `snaptrade_${accId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
-
-          await prisma.investmentTransaction.upsert({
-            where: { snaptradeOrderId: orderId },
-            update: {},
-            create: {
-              accountId: account.id,
-              securityId: security.id,
-              snaptradeOrderId: orderId,
-              date,
-              name: String(act.description ?? description ?? `${mapped} ${ticker}`),
-              type: mapped,
-              quantity: Math.abs(units),
-              price,
-              amount,
-              fees,
-              isoCurrencyCode: extractCurrency(act.currency) ?? "USD",
-            },
-          });
-          txCount++;
-        } catch (err) {
-          // Per-row failure: log with the raw activity so we can
-          // reproduce + extend the parser. Continue with the next row.
-          logger.warn(
-            { err, accountId: accId, actId: String(act.id ?? "") },
-            "snaptrade: failed to upsert activity row; continuing",
-          );
+      // Pre-classify each activity row, dropping unknowns and
+      // resolving its destination account. We do this in a
+      // synchronous pass so we have the full set of distinct
+      // tickers before we hit the DB — that lets us batch the
+      // upsertSecurity calls once instead of once per row.
+      type Resolved = {
+        accountId: string;
+        ticker: string;
+        description: string;
+        mapped: string;
+        actOption: OptionSpec | undefined;
+        price: number;
+        units: number;
+        amount: number;
+        fees: number;
+        date: Date;
+        orderId: string;
+        currency: string;
+        rawId: string;
+      };
+      const resolved: Resolved[] = [];
+      let skippedUnknownThisRun = 0;
+      for (const act of allActivities) {
+        const acctRef = act.account as { id?: string } | string | undefined;
+        const stAccId = typeof acctRef === "string" ? acctRef : acctRef?.id;
+        const localAcc = stAccId ? accountByStId.get(stAccId) : undefined;
+        if (!localAcc) {
+          // Activity references an account we didn't sync (or the
+          // broker returned a bare cash row with no account ref).
+          // Skip — better than FK-failing on a ghost account.
+          continue;
         }
+
+        const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
+        const mapped = mapActivityType(rawType);
+        if (!mapped) {
+          skippedUnknownThisRun++;
+          skippedUnknownTotal++;
+          if (rawType) {
+            skippedUnknownLabels.add(rawType);
+            logger.warn({ rawType, accountId: stAccId }, "snaptrade: unrecognised activity type");
+          }
+          continue;
+        }
+
+        const { ticker, description } = extractSnapTradeSymbol(act);
+        const price = safeNumber(act.price);
+        const units = safeNumber(act.units);
+        const amount = Math.abs(safeNumber(act.amount, price * units));
+        const fees = Math.abs(safeNumber(act.fee));
+        const date =
+          parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
+        const tradeDateKey = date.toISOString().slice(0, 10);
+        const actOption: OptionSpec | undefined =
+          parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
+        const rawId = String(act.id ?? "").trim();
+        const orderId =
+          rawId ||
+          `snaptrade_${stAccId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
+
+        resolved.push({
+          accountId: localAcc.id,
+          ticker,
+          description,
+          mapped,
+          actOption,
+          price,
+          units,
+          amount,
+          fees,
+          date,
+          orderId,
+          currency: extractCurrency(act.currency) ?? "USD",
+          rawId,
+        });
       }
-      if (skippedUnknown > 0) {
+      if (skippedUnknownThisRun > 0) {
         logger.info(
-          { accountId: accId, skippedUnknown },
+          { developerId: developer.id, skippedUnknown: skippedUnknownThisRun },
           "snaptrade activities skipped (unrecognised type)",
         );
       }
+
+      // --- Batch upsertSecurity for distinct (ticker, option-spec) ---
+      //
+      // Hundreds of activity rows typically reference 10-50 distinct
+      // securities. Calling upsertSecurity per row was 1+ DB round
+      // trips per row; do it once per distinct security and cache
+      // the resulting Security.id by ticker.
+      type SecKey = string;
+      const securityByTicker = new Map<SecKey, { id: string }>();
+      const distinct = new Map<SecKey, Resolved>();
+      for (const r of resolved) {
+        if (!distinct.has(r.ticker)) distinct.set(r.ticker, r);
+      }
+      const securityResults = await Promise.all(
+        [...distinct.values()].map(async (r) => {
+          try {
+            const sec = await upsertSecurity(
+              r.ticker,
+              r.description,
+              r.price,
+              undefined,
+              r.actOption ?? undefined,
+            );
+            return { ticker: r.ticker, sec };
+          } catch (err) {
+            logger.warn(
+              { err, ticker: r.ticker },
+              "snaptrade: upsertSecurity failed; activity rows for this ticker will be skipped",
+            );
+            return null;
+          }
+        }),
+      );
+      for (const sr of securityResults) {
+        if (sr) securityByTicker.set(sr.ticker, { id: sr.sec.id });
+      }
+
+      // --- Bounded-concurrency InvestmentTransaction upserts ---
+      //
+      // Per-row Prisma round-trips dominate sync time on returning
+      // syncs (refresh-now with hundreds of existing rows). createMany
+      // would be faster but doesn't compose with the snaptradeOrderId
+      // unique-upsert semantics we need for idempotency. A small
+      // concurrency pool keeps the load on Neon's pooler reasonable
+      // while still parallelizing the round-trips.
+      const POOL = 10;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < resolved.length) {
+          const i = cursor++;
+          const r = resolved[i]!;
+          const security = securityByTicker.get(r.ticker);
+          if (!security) continue; // upsertSecurity failed for this ticker — log already emitted
+          try {
+            await prisma.investmentTransaction.upsert({
+              where: { snaptradeOrderId: r.orderId },
+              update: {},
+              create: {
+                accountId: r.accountId,
+                securityId: security.id,
+                snaptradeOrderId: r.orderId,
+                date: r.date,
+                name: String(r.description ?? `${r.mapped} ${r.ticker}`),
+                type: r.mapped,
+                quantity: Math.abs(r.units),
+                price: r.price,
+                amount: r.amount,
+                fees: r.fees,
+                isoCurrencyCode: r.currency,
+              },
+            });
+            txCount++;
+          } catch (err) {
+            logger.warn(
+              { err, actId: r.rawId },
+              "snaptrade: failed to upsert activity row; continuing",
+            );
+          }
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(POOL, resolved.length) }, () => worker()),
+      );
     }
   }
 

@@ -226,6 +226,16 @@ export function ConnectButton() {
    * count lands, or to null when the user clicks the 10-minute
    * escape hatch (skipWaitRef flips true). Never times out on its
    * own — the user is the one who decides to bail.
+   *
+   * Poll-first ordering: the previous implementation slept 60s
+   * BEFORE the first poll, on the assumption that an immediate
+   * re-poll would be wasteful because "the foreground sync just
+   * returned 0." That used to be true when this ran right after
+   * a heavy retry-sync; the cold-cache path no longer does that
+   * (see afterSnapTradeConnect). Trying once immediately costs
+   * one cheap activities-only round-trip and saves up to 60s on
+   * the critical path when the broker happens to be ready right
+   * after the first sync wrote accounts + holdings.
    */
   async function pollUntilTransactionsArrive(): Promise<{
     transactionsAdded: number;
@@ -233,22 +243,6 @@ export function ConnectButton() {
     skipWaitRef.current = false;
     const POLL_MS = 60_000;
     while (true) {
-      // Sleep first — the foreground sync just returned 0, so an
-      // immediate re-poll would hit the same empty response. The
-      // user-visible counter ticks during this gap (overlayElapsed)
-      // so the wait isn't silent.
-      await new Promise<void>((resolve) => {
-        const t = window.setTimeout(resolve, POLL_MS);
-        const check = window.setInterval(() => {
-          if (skipWaitRef.current) {
-            window.clearTimeout(t);
-            window.clearInterval(check);
-            resolve();
-          }
-        }, 250);
-        // Cleanup the watcher even on the natural-resolve path.
-        window.setTimeout(() => window.clearInterval(check), POLL_MS + 50);
-      });
       if (skipWaitRef.current) return null;
 
       try {
@@ -273,6 +267,23 @@ export function ConnectButton() {
         // try again on the next 60s tick. The user sees the same
         // pulsing 90% bar regardless.
       }
+
+      // Empty response (or network blip) — sleep before the next
+      // poll. Watch the skip ref every 250ms during the sleep so
+      // the escape hatch button responds quickly instead of
+      // waiting up to a minute.
+      await new Promise<void>((resolve) => {
+        const t = window.setTimeout(resolve, POLL_MS);
+        const check = window.setInterval(() => {
+          if (skipWaitRef.current) {
+            window.clearTimeout(t);
+            window.clearInterval(check);
+            resolve();
+          }
+        }, 250);
+        // Cleanup the watcher even on the natural-resolve path.
+        window.setTimeout(() => window.clearInterval(check), POLL_MS + 50);
+      });
     }
   }
 
@@ -351,83 +362,70 @@ export function ConnectButton() {
         (out.raw_activities ?? 0) === 0;
 
       if (coldCache) {
-        // Invalidate accounts + holdings now so the dashboard
-        // updates underneath the overlay (user sees holdings the
-        // moment they click Continue).
+        // First sync wrote accounts + holdings successfully but came
+        // back with zero transactions — SnapTrade's broker-side
+        // cache is still warming. Earlier code waited 8 seconds and
+        // ran a SECOND full syncDeveloper (positions + options +
+        // activities for every account); the 8s was a guess and
+        // the second full sync re-did positions/options that
+        // already wrote. Both wasted time on the critical path.
+        //
+        // Now: invalidate the cache for accounts + holdings (so the
+        // dashboard renders fresh data underneath the overlay),
+        // flip the transaction step to the pulsing wait state,
+        // and go straight into the poll loop. pollUntilTransactionsArrive
+        // hits the cheap activities-only endpoint and the first
+        // poll is immediate (see fix #4 in pollUntilTransactionsArrive).
         qc.invalidateQueries({ queryKey: ["accounts"] });
         qc.invalidateQueries({ queryKey: ["holdings"] });
-        // Bump the visible attempt counter so the user sees that
-        // we're retrying — not just hanging.
-        setOverlaySteps((prev) => ({
-          ...prev,
-          connecting: { state: "done" },
-          transactions: { state: "in_progress", attempt: 2, maxAttempts: 2 },
-        }));
-        await new Promise((r) => setTimeout(r, 8_000));
-        const final = await runOneSync();
+        if (firstConnect) {
+          setOverlaySteps((prev) => ({
+            ...prev,
+            connecting: { state: "done" },
+            transactions: { state: "in_progress", waitingForBroker: true },
+          }));
+        }
+        // Stash the first-sync result so we can preserve account /
+        // holdings counts in the final syncResult regardless of
+        // whether the poll resolves or the user bails.
         setSyncResult({
           ok: true,
-          accounts: final.accounts ?? 0,
-          holdings: final.holdings ?? 0,
-          transactions: final.transactions ?? 0,
-          options_fetched: final.options_fetched,
-          raw_activities: final.raw_activities,
-          skipped_unknown: final.skipped_unknown,
-          skipped_labels: final.skipped_labels,
-          errors: final.errors,
-          fully_succeeded: final.fully_succeeded,
+          accounts: out.accounts ?? 0,
+          holdings: out.holdings ?? 0,
+          transactions: 0,
+          options_fetched: out.options_fetched,
+          raw_activities: out.raw_activities,
+          skipped_unknown: out.skipped_unknown,
+          skipped_labels: out.skipped_labels,
+          errors: out.errors,
+          fully_succeeded: out.fully_succeeded,
         });
-        // The retry-once finished but transactions are STILL empty
-        // and the user has real accounts — SnapTrade is still
-        // warming its broker-side cache. We do NOT release the user
-        // yet. Instead the overlay locks at 90%, the bar pulses,
-        // and we poll the activities endpoint every 60 seconds in
-        // a tight loop until real transactions arrive (or the user
-        // hits the 10-minute escape hatch).
-        const waitingForBroker =
-          firstConnect &&
-          (final.accounts ?? 0) > 0 &&
-          (final.transactions ?? 0) === 0;
-        if (firstConnect) {
-          setOverlaySteps({
-            connecting: { state: "done" },
-            accounts: { state: "done", count: final.accounts ?? 0 },
-            holdings: { state: "done", count: final.holdings ?? 0 },
-            transactions: waitingForBroker
-              ? { state: "in_progress", waitingForBroker: true }
-              : { state: "done", count: final.transactions ?? 0 },
+        const polled = await pollUntilTransactionsArrive();
+        if (polled) {
+          setSyncResult({
+            ok: true,
+            accounts: out.accounts ?? 0,
+            holdings: out.holdings ?? 0,
+            transactions: polled.transactionsAdded,
+            options_fetched: out.options_fetched,
+            raw_activities: polled.transactionsAdded,
+            skipped_unknown: 0,
+            skipped_labels: [],
+            errors: out.errors,
+            fully_succeeded: out.fully_succeeded,
           });
-        }
-        if (waitingForBroker) {
-          const polled = await pollUntilTransactionsArrive();
-          if (polled) {
-            setSyncResult({
-              ok: true,
-              accounts: final.accounts ?? 0,
-              holdings: final.holdings ?? 0,
-              transactions: polled.transactionsAdded,
-              options_fetched: final.options_fetched,
-              raw_activities: polled.transactionsAdded,
-              skipped_unknown: 0,
-              skipped_labels: [],
-              errors: final.errors,
-              fully_succeeded: final.fully_succeeded,
-            });
-            if (firstConnect) {
-              setOverlaySteps((prev) => ({
-                ...prev,
-                transactions: {
-                  state: "done",
-                  count: polled.transactionsAdded,
-                },
-              }));
-            }
-          } else {
-            // User clicked "Continue without transactions" — keep
-            // the saved syncResult as-is (with transactions=0) so
-            // the dashboard shows the partial state honestly.
+          if (firstConnect) {
+            setOverlaySteps((prev) => ({
+              ...prev,
+              transactions: {
+                state: "done",
+                count: polled.transactionsAdded,
+              },
+            }));
           }
         }
+        // If polled is null the user clicked "Continue without
+        // transactions" — keep the partial syncResult as-is.
       } else {
         setSyncResult({
           ok: true,
