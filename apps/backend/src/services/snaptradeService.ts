@@ -180,6 +180,11 @@ export interface SyncResult {
   raw_activities: number;
   skipped_unknown: number;
   skipped_labels: string[];
+  /** Connected brokerage names — drives broker-themed UI on the
+   *  post-connect overlay (Robinhood gets a green palette etc.)
+   *  Order is not guaranteed; the dashboard typically uses the
+   *  first one for theming. */
+  brokers: string[];
   /** Per-step error summaries for the user-facing banner. */
   errors: Array<{
     step: string;
@@ -215,6 +220,9 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
   let rawActivitiesFetched = 0;
   let skippedUnknownTotal = 0;
   const skippedUnknownLabels = new Set<string>();
+  // De-duped brokerage display names for the SyncResult, used by the
+  // post-connect overlay to theme its space scene per broker.
+  const brokerNames = new Set<string>();
   // Map every Account.snaptradeAccountId we touch this sync to its
   // local Account row so the single hoisted activities call (below)
   // can dispatch each row to the correct local account without
@@ -238,6 +246,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       raw_activities: 0,
       skipped_unknown: 0,
       skipped_labels: [],
+      brokers: [],
       errors,
       fully_succeeded: false,
     };
@@ -250,6 +259,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     const brokerage = conn.brokerage as { slug?: string; name?: string; aws_s3_logo_url?: string } | undefined;
     const brokerSlug = brokerage?.slug ?? "unknown";
     const brokerName = brokerage?.name ?? brokerSlug;
+    brokerNames.add(brokerName);
 
     // Upsert Institution (keyed by "st_<slug>" to avoid colliding with seeded ins_* IDs)
     const institutionId = `st_${brokerSlug.toLowerCase()}`;
@@ -1027,6 +1037,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     raw_activities: rawActivitiesFetched,
     skipped_unknown: skippedUnknownTotal,
     skipped_labels: [...skippedUnknownLabels],
+    brokers: [...brokerNames],
     errors,
     // fully_succeeded means: every SnapTrade SDK call succeeded for
     // every account. The dashboard can rely on this to decide whether

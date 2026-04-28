@@ -40,6 +40,10 @@ export function ConnectButton() {
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [overlayReady, setOverlayReady] = useState(false);
   const [overlayElapsed, setOverlayElapsed] = useState(0);
+  // Captured from the SyncResult.brokers field — drives the overlay's
+  // broker-specific theme (Robinhood green, Fidelity navy/gold, etc.).
+  // First entry is used; null when the response hasn't arrived yet.
+  const [connectedBroker, setConnectedBroker] = useState<string | null>(null);
   const elapsedTimerRef = useRef<number | null>(null);
   const [overlaySteps, setOverlaySteps] = useState<{
     connecting: { state: StepState };
@@ -183,6 +187,7 @@ export function ConnectButton() {
       raw_activities?: number;
       skipped_unknown?: number;
       skipped_labels?: string[];
+      brokers?: string[];
       errors?: SyncError[];
       fully_succeeded?: boolean;
     }>("/api/snaptrade/sync", { method: "POST" });
@@ -344,6 +349,14 @@ export function ConnectButton() {
 
     try {
       const out = await runOneSync();
+
+      // Capture the connected broker name for the overlay's theme.
+      // SyncResult.brokers is an array (a developer might have
+      // multiple connections); the overlay only needs one to pick a
+      // theme, so use the first.
+      if (out.brokers && out.brokers.length > 0) {
+        setConnectedBroker(out.brokers[0] ?? null);
+      }
 
       // First sync done: we now know real account / holdings / tx counts.
       // For the overlay: accounts and holdings are definitely done at
@@ -713,9 +726,14 @@ export function ConnectButton() {
         steps={overlaySteps}
         elapsedSeconds={overlayElapsed}
         ready={overlayReady}
+        brokerName={connectedBroker}
         onClose={() => {
           setOverlayOpen(false);
           stopOverlayTimer();
+          // Clear the broker name so the next connection cycle starts
+          // fresh. The overlay falls back to the default theme until
+          // the next sync response lands.
+          setConnectedBroker(null);
         }}
         onSkipWait={() => {
           // 10-minute escape hatch — the user is choosing to bail

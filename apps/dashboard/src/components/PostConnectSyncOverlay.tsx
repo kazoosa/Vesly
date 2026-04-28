@@ -1,18 +1,18 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd } from "./money";
-import { APP_NAME } from "../lib/brand";
+import { themeForBroker } from "./spaceTheme";
 
-// Lazy-load the 3D scene so its ~150KB three.js bundle only ships
-// when the overlay actually mounts. The rest of the dashboard never
-// pays the bundle cost.
+// Lazy-load the 3D scene so its three.js + post-processing bundle
+// only ships when the overlay actually mounts. Rest of the dashboard
+// never pays the cost.
 const SpaceScene = lazy(() => import("./SpaceScene"));
 
 /** Detect prefers-reduced-motion at module scope so we don't re-query
- *  per render. We DO re-evaluate on each overlay open via the hook
- *  below, in case the user toggled the setting between sessions. */
+ *  per render. Re-evaluates on each overlay open in case the user
+ *  toggled the OS setting between sessions. */
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -30,21 +30,15 @@ function usePrefersReducedMotion(): boolean {
 
 /**
  * Premium full-screen sync overlay shown after a brokerage connection
- * completes. Drives a smooth animated progress bar plus per-step
+ * completes. Drives a phased animated progress bar plus per-step
  * status rows. Auto-dismisses when the sync fully resolves; the
- * caller doesn't need a Continue button — the overlay closes itself
- * once everything is in.
+ * caller doesn't need a Continue button.
  *
- * Progress mapping (from the spec):
- *   connecting done       → 10%
- *   accounts done         → 25%
- *   holdings done         → 50%
- *   transactions done     → 90%   (or poller started)
- *   ready (sync resolved) → 100% → hold 500ms → fade out
- *
- * The bar animates between the discrete checkpoints rather than
- * snapping, so the user sees continuous motion. ETA below the steps
- * is recomputed from elapsed/percent each second.
+ * Phases:
+ *   1 — initial sync                → bar fills 0 → 40%
+ *   2 — broker cache wait            → bar holds at 40%, count-up timer
+ *   3 — DB writes (post-poll)        → bar animates 40 → 100%
+ *   4 — ready, hold + fade            → existing auto-dismiss
  */
 
 export type StepKey = "connecting" | "accounts" | "holdings" | "transactions";
@@ -61,16 +55,7 @@ interface Steps {
     count?: number;
     attempt?: number;
     maxAttempts?: number;
-    /** Phase 2: foreground sync returned 0 transactions and the overlay
-     *  is now polling SnapTrade waiting for the broker-side cache to
-     *  warm. Bar holds at 40%, count-up timer + rotating context copy.
-     *  The escape hatch button appears after 10 minutes (see `onSkipWait`). */
     waitingForBroker?: boolean;
-    /** Phase 3: poll returned a non-zero count, the backend is now
-     *  writing those transactions to the DB. Bar quickly animates from
-     *  40% → 100% over the (short) write window. Set true the moment
-     *  the parent sees `transactionsAdded > 0`; cleared when ready
-     *  flips true. */
     writing?: boolean;
   };
 }
@@ -78,32 +63,20 @@ interface Steps {
 interface Props {
   open: boolean;
   steps: Steps;
-  /** Total elapsed seconds — kept by the parent so we can
-   *  acknowledge particularly long syncs honestly. */
+  /** Total elapsed seconds since the overlay opened — kept by the
+   *  parent for completeness. The overlay also tracks per-phase
+   *  elapsed locally so each phase counts up from 0. */
   elapsedSeconds: number;
-  /** Hide. Called automatically once the auto-dismiss timer fires;
-   *  the parent uses it to flip overlayOpen back to false. */
   onClose: () => void;
-  /** True when every step is done (or errored). When true we hold
-   *  at 100% for 500ms then fade out. */
   ready: boolean;
-  /** Called when the user clicks "Continue without transactions"
-   *  — the escape-hatch button shown only after 10 minutes of
-   *  waiting for the broker-side cache. The parent stops the
-   *  poll loop and dismisses the overlay. */
   onSkipWait?: () => void;
+  /** Connected brokerage name from the SyncResult — drives the
+   *  broker-specific theme (Robinhood green, Fidelity navy/gold,
+   *  Schwab electric blue, etc). Optional; falls back to default. */
+  brokerName?: string | null;
 }
 
-// Per-step weight contribution to overall progress. Sum to 40 — the
-// progress bar reaches 40% by the end of Phase 1 (initial sync),
-// holds there through Phase 2 (broker wait, which is a known-unknown
-// duration so we don't fake-advance), then animates 40→100 during
-// Phase 3 (DB writes). The old "fill to 90% during wait" pattern
-// was dishonest and felt jarring when the bar reset.
-//   connecting   5
-//   accounts     5   (cumulative 10)
-//   holdings    10   (cumulative 20)
-//   transactions 20  (cumulative 40)
+// Step weights — sum to 40, since Phase 1 fills only to 40%.
 const STEP_WEIGHTS: Record<StepKey, number> = {
   connecting: 5,
   accounts: 5,
@@ -113,19 +86,10 @@ const STEP_WEIGHTS: Record<StepKey, number> = {
 
 const STEP_ORDER: StepKey[] = ["connecting", "accounts", "holdings", "transactions"];
 
-/**
- * Three phases the bar honors:
- *   Phase 1 (initial sync)        → fills to 40%
- *   Phase 2 (waiting for broker)  → holds at 40% (no fake advance)
- *   Phase 3 (writing transactions) → 40% → 100%
- *   Phase 4 (ready)               → 100%
- */
 function targetPercent(steps: Steps, ready: boolean): number {
   if (ready) return 100;
-  if (steps.transactions.writing) return 100; // Phase 3 — animate to 100 over short window
-  if (steps.transactions.waitingForBroker) return 40; // Phase 2 — hold
-  // Phase 1 — sum of completed step weights, with half-credit for the
-  // active step so the bar isn't frozen between checkpoints.
+  if (steps.transactions.writing) return 100;
+  if (steps.transactions.waitingForBroker) return 40;
   let pct = 0;
   for (const k of STEP_ORDER) {
     const s = steps[k];
@@ -187,8 +151,6 @@ function stepLabel(k: StepKey, step: Steps[StepKey]): string {
   }
 }
 
-/** Format the count-up timer shown during Phase 2 (broker wait).
- *  Under 60s shows seconds; over 60s shows M:SS. */
 function fmtCountUp(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   if (s < 60) return `0:${s.toString().padStart(2, "0")}`;
@@ -197,8 +159,6 @@ function fmtCountUp(seconds: number): string {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
-/** Rotating context copy below the count-up timer. Honest about
- *  what's happening at each stage of the wait — no fake numbers. */
 function waitContextCopy(elapsedSeconds: number): string {
   if (elapsedSeconds < 30) return "Connecting to your broker…";
   if (elapsedSeconds < 90) return "Your broker is preparing your transaction history…";
@@ -206,19 +166,19 @@ function waitContextCopy(elapsedSeconds: number): string {
   return "This is taking longer than usual. Still working — some brokers are slow on first connect.";
 }
 
-/** Phase 3 ETA: only shown while we're writing rows to the DB. We
- *  estimate from the elapsed write time and a rolling rate. Guards
- *  every edge case (NaN, zero, negative). */
 function fmtPhase3Eta(remainingSeconds: number): string {
-  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
-    return "Almost done…";
-  }
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return "Almost done…";
   if (remainingSeconds < 5) return "Almost done…";
-  if (remainingSeconds < 60) {
-    return `About ${Math.round(remainingSeconds)} seconds remaining`;
-  }
+  if (remainingSeconds < 60) return `About ${Math.round(remainingSeconds)} seconds remaining`;
   const m = Math.round(remainingSeconds / 60);
   return `About ${m} minute${m === 1 ? "" : "s"} remaining`;
+}
+
+function fmtElapsed(s: number): string {
+  if (s < 60) return `${s}s elapsed`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}m ${r}s elapsed`;
 }
 
 export function PostConnectSyncOverlay({
@@ -228,70 +188,68 @@ export function PostConnectSyncOverlay({
   onClose,
   ready,
   onSkipWait,
+  brokerName,
 }: Props) {
-  // Phase derivation — see the doc on `Steps` for what each flag means.
-  // Phase 1 = !waitingForBroker && !writing && !ready
-  // Phase 2 = waitingForBroker && !ready
-  // Phase 3 = writing && !ready
-  // Phase 4 = ready
+  // Phase derivation.
   const writing = Boolean(steps.transactions.writing) && !ready;
   const waitingForBroker =
     Boolean(steps.transactions.waitingForBroker) && !ready && !writing;
-  // Escape hatch only during Phase 2, after 10 minutes.
-  const showEscapeHatch =
-    waitingForBroker && elapsedSeconds >= 600 && !!onSkipWait;
 
-  // Reduced motion: skip the 3D scene entirely. Falls back to the
-  // gradient + blur backdrop the previous version used.
+  // Reduced motion: skip the 3D scene; fall back to gradient backdrop.
   const reducedMotion = usePrefersReducedMotion();
   const sceneActive = (waitingForBroker || writing) && !reducedMotion;
 
-  // Force re-render every second so the count-up timer + rotating
-  // copy + ETA recompute without the parent pushing updates.
-  const [, force] = useState(0);
-  useEffect(() => {
-    if (!open) return;
-    const t = setInterval(() => force((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [open]);
+  // Theme derivation — same matcher the scene uses, so HUD accents match.
+  const theme = themeForBroker(brokerName);
 
-  // Track when Phase 2 started so the count-up timer ticks from 0
-  // when the wait begins, not from when the user opened the overlay.
+  // ---- Phase 2 timer (Bug #1 fix) -----------------------------------
+  //
+  // Earlier we had a stale-closure issue: the timer ticked off a
+  // useState force-render but the dep array referenced the
+  // setter (stable across renders) so useMemo never recomputed.
+  // New shape: explicit setInterval, explicit setState, explicit
+  // ref for the start time, no force-render trick.
   const phase2StartRef = useRef<number | null>(null);
+  const [phase2Seconds, setPhase2Seconds] = useState(0);
   useEffect(() => {
-    if (waitingForBroker && phase2StartRef.current === null) {
-      phase2StartRef.current = Date.now();
-    }
     if (!waitingForBroker) {
       phase2StartRef.current = null;
+      setPhase2Seconds(0);
+      return;
     }
+    if (phase2StartRef.current === null) {
+      phase2StartRef.current = Date.now();
+    }
+    // First tick immediately, so the count starts at 0:00 and not 0:01
+    // on initial render.
+    setPhase2Seconds(
+      Math.floor((Date.now() - phase2StartRef.current) / 1000),
+    );
+    const id = window.setInterval(() => {
+      if (phase2StartRef.current === null) return;
+      setPhase2Seconds(
+        Math.floor((Date.now() - phase2StartRef.current) / 1000),
+      );
+    }, 1000);
+    return () => window.clearInterval(id);
   }, [waitingForBroker]);
-  const phase2Seconds = useMemo(() => {
-    if (!waitingForBroker || phase2StartRef.current === null) return 0;
-    return Math.floor((Date.now() - phase2StartRef.current) / 1000);
-    // Re-runs on the per-second force-render above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waitingForBroker, force]);
 
-  // Track when Phase 3 (writing) started so we can compute a real
-  // ETA from elapsed / progress. The DB writes are 3-4s for ~900
-  // rows so the ETA mostly says "Almost done…" — but we still
-  // compute it correctly so the math holds for larger first-syncs.
+  // ---- Phase 3 timer (writing) — used to compute Phase 3 ETA -------
   const phase3StartRef = useRef<number | null>(null);
+  const [, setPhase3Tick] = useState(0); // re-render every 250ms during writing
   useEffect(() => {
-    if (writing && phase3StartRef.current === null) {
-      phase3StartRef.current = Date.now();
-    }
     if (!writing) {
       phase3StartRef.current = null;
+      return;
     }
+    if (phase3StartRef.current === null) {
+      phase3StartRef.current = Date.now();
+    }
+    const id = window.setInterval(() => setPhase3Tick((n) => n + 1), 250);
+    return () => window.clearInterval(id);
   }, [writing]);
 
-  // Animated bar: ease the displayed percent toward the target. The
-  // 0.18 per-frame catch-up is fast enough that big jumps (0→40,
-  // 40→100) feel responsive and small ones are smooth. Phase 2's
-  // hold at 40% means the bar literally doesn't move during the
-  // broker wait — by design, no fake advance.
+  // ---- Animated progress bar -----------------------------------------
   const targetPct = targetPercent(steps, ready);
   const [displayPct, setDisplayPct] = useState(0);
   const rafRef = useRef<number | null>(null);
@@ -317,10 +275,7 @@ export function PostConnectSyncOverlay({
     };
   }, [open, targetPct]);
 
-  // Auto-dismiss: when ready flips true, hold the bar at 100% for
-  // 500ms (so the user sees the completion state) then fade out for
-  // 400ms before calling onClose. The fading state is local so the
-  // parent can keep ready=true throughout.
+  // ---- Auto-dismiss ---------------------------------------------------
   const [fadingOut, setFadingOut] = useState(false);
   useEffect(() => {
     if (!open) {
@@ -339,8 +294,7 @@ export function PostConnectSyncOverlay({
     };
   }, [open, ready, displayPct, onClose]);
 
-  // Galaxy fly-through HUD hint — fades out 10s after the scene
-  // activates so it doesn't distract once the user has the gist.
+  // ---- HUD hint fade --------------------------------------------------
   const [hintVisible, setHintVisible] = useState(true);
   useEffect(() => {
     if (!sceneActive) {
@@ -351,15 +305,96 @@ export function PostConnectSyncOverlay({
     return () => window.clearTimeout(t);
   }, [sceneActive]);
 
+  // ---- Audio mute (drives ambient track in SpaceScene) ---------------
+  const [audioEnabled, setAudioEnabled] = useState(true);
+
+  // ---- Escape hatch (10 minute) ---------------------------------------
+  const showEscapeHatch =
+    waitingForBroker && phase2Seconds >= 600 && !!onSkipWait;
+
+  // ---- Draggable card -------------------------------------------------
+  //
+  // useRef on the card element with manual pointerdown/move/up. The
+  // handle (the grip dots at the top) is the only valid drag region;
+  // the rest of the card stays click-through. Card uses position:
+  // fixed so it can sit above the scene canvas. Constrained to
+  // viewport bounds. Double-click on the handle smoothly recenters.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [cardPos, setCardPos] = useState<{ left: number; top: number } | null>(null);
+  const [recentering, setRecentering] = useState(false);
+  const dragStateRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
+  // Compute initial centered position when the overlay first opens.
+  useEffect(() => {
+    if (!open) return;
+    if (cardPos !== null) return;
+    const card = cardRef.current;
+    if (!card) return;
+    const rect = card.getBoundingClientRect();
+    const left = (window.innerWidth - rect.width) / 2;
+    const top = (window.innerHeight - rect.height) / 2;
+    setCardPos({ left, top });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function clampToViewport(left: number, top: number) {
+    const card = cardRef.current;
+    if (!card) return { left, top };
+    const rect = card.getBoundingClientRect();
+    const maxLeft = window.innerWidth - rect.width;
+    const maxTop = window.innerHeight - rect.height;
+    return {
+      left: Math.max(0, Math.min(maxLeft, left)),
+      top: Math.max(0, Math.min(maxTop, top)),
+    };
+  }
+
+  function onHandlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    const card = cardRef.current;
+    if (!card) return;
+    setRecentering(false);
+    const rect = card.getBoundingClientRect();
+    dragStateRef.current = {
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+    };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function onHandlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const ds = dragStateRef.current;
+    if (!ds) return;
+    const next = clampToViewport(
+      e.clientX - ds.offsetX,
+      e.clientY - ds.offsetY,
+    );
+    setCardPos(next);
+  }
+  function onHandlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    dragStateRef.current = null;
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* ok */
+    }
+  }
+  function onHandleDoubleClick() {
+    const card = cardRef.current;
+    if (!card) return;
+    const rect = card.getBoundingClientRect();
+    const left = (window.innerWidth - rect.width) / 2;
+    const top = (window.innerHeight - rect.height) / 2;
+    setRecentering(true);
+    setCardPos({ left, top });
+    // Strip the smooth-transition class after the animation lands so
+    // future drags feel instantaneous again.
+    window.setTimeout(() => setRecentering(false), 350);
+  }
+
   if (!open) return null;
 
-  // Phase 3 ETA. We model the bar as advancing 40 → 100 over the
-  // write window: progress along that 60-point span is
-  // (displayPct - 40) / 60. ETA = elapsed / progress - elapsed.
+  // ---- Phase 3 ETA computation ---------------------------------------
   let phase3EtaText = "";
   if (writing && phase3StartRef.current !== null) {
-    const elapsedMs = Date.now() - phase3StartRef.current;
-    const elapsedSec = elapsedMs / 1000;
+    const elapsedSec = (Date.now() - phase3StartRef.current) / 1000;
     const progress = Math.max(0, (displayPct - 40) / 60);
     if (progress < 0.05 || elapsedSec < 1) {
       phase3EtaText = "Almost done…";
@@ -370,8 +405,7 @@ export function PostConnectSyncOverlay({
     }
   }
 
-  // Backdrop choice: scene takes over when active. The card sits on
-  // top either way and keeps its drop shadow.
+  // ---- Backdrop choice -----------------------------------------------
   const backdropStyle = sceneActive
     ? { background: "#020818" }
     : {
@@ -387,35 +421,65 @@ export function PostConnectSyncOverlay({
       aria-modal="true"
       aria-label="Syncing your brokerage"
       aria-live="polite"
-      className={`fixed inset-0 z-[100] grid place-items-center p-4 ${
+      className={`fixed inset-0 z-[100] ${
         fadingOut ? "animate-fade-out" : "animate-fade-in"
       }`}
       style={backdropStyle}
     >
       {sceneActive && (
         <Suspense fallback={null}>
-          <SpaceScene />
+          <SpaceScene brokerName={brokerName} audioEnabled={audioEnabled} />
         </Suspense>
       )}
 
-      {/* HUD watermark — top-left, very faint, sci-fi-film vibe.
-          Stays up the whole time the scene is active so it reads as
-          part of the visual identity, not a transient label. */}
+      {/* Top-left: themed broker watermark. Reads as a HUD element. */}
       {sceneActive && (
         <div
-          className="absolute top-4 left-4 z-[1] text-white pointer-events-none font-num tracking-[0.4em] uppercase"
+          className="absolute top-4 left-4 z-[1] pointer-events-none font-num uppercase"
           style={{
-            opacity: 0.18,
-            fontSize: 11,
+            color: theme.hudAccent,
+            opacity: 0.2,
+            fontSize: 14,
+            letterSpacing: "0.3em",
           }}
           aria-hidden
         >
-          {APP_NAME}
+          {theme.watermark}
         </div>
       )}
 
-      {/* Bottom-right hint with the controls reference. Fades after
-          10 seconds so it doesn't distract longer-running waits. */}
+      {/* Top-right: mute toggle. */}
+      {sceneActive && (
+        <button
+          type="button"
+          onClick={() => setAudioEnabled((v) => !v)}
+          className="absolute top-4 right-4 z-[1] text-white transition-opacity hover:opacity-100"
+          style={{
+            opacity: 0.4,
+            fontSize: 16,
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+          }}
+          aria-label={audioEnabled ? "Mute ambient audio" : "Unmute ambient audio"}
+          title={audioEnabled ? "Mute" : "Unmute"}
+        >
+          {audioEnabled ? "🔊" : "🔇"}
+        </button>
+      )}
+
+      {/* Bottom-left: live stats. Updates as transactions arrive. */}
+      {sceneActive && (
+        <LiveStats
+          accounts={steps.accounts.count ?? 0}
+          holdings={steps.holdings.count ?? 0}
+          transactions={steps.transactions.count}
+          writing={writing}
+          waitingForBroker={waitingForBroker}
+        />
+      )}
+
+      {/* Bottom-right: control hint. */}
       {sceneActive && (
         <div
           className="absolute bottom-4 right-4 z-[1] text-white pointer-events-none transition-opacity duration-1000"
@@ -430,16 +494,51 @@ export function PostConnectSyncOverlay({
       )}
 
       <div
-        className="card w-full max-w-md overflow-hidden animate-scale-in relative z-[1]"
+        ref={cardRef}
+        className={`card max-w-md overflow-hidden animate-scale-in z-[2] ${
+          recentering ? "transition-all duration-300 ease-out" : ""
+        }`}
         style={{
+          position: "fixed",
+          left: cardPos?.left ?? "50%",
+          top: cardPos?.top ?? "50%",
+          // Fall back to translate-centering until the measurement
+          // effect has run on first paint. Once cardPos is set we use
+          // explicit left/top so dragging works.
+          transform: cardPos ? "none" : "translate(-50%, -50%)",
+          width: "calc(100% - 32px)",
+          maxWidth: 448,
           boxShadow:
             "0 24px 60px -12px rgb(0 0 0 / 0.45), 0 8px 20px -6px rgb(0 0 0 / 0.25)",
         }}
       >
-        {/* Progress bar. During Phase 2 we hold at 40% with a pulse
-            (no shimmer — that would fake forward motion the wait
-            doesn't have). During phases 1/3 the shimmer reads as
-            "actively making progress." */}
+        {/* Drag handle. Three dots, cursor flips to grab/grabbing. */}
+        <div
+          onPointerDown={onHandlePointerDown}
+          onPointerMove={onHandlePointerMove}
+          onPointerUp={onHandlePointerUp}
+          onPointerCancel={onHandlePointerUp}
+          onDoubleClick={onHandleDoubleClick}
+          className="flex items-center justify-center py-2 select-none"
+          style={{
+            cursor: dragStateRef.current ? "grabbing" : "grab",
+            background: "transparent",
+            touchAction: "none",
+          }}
+          role="button"
+          aria-label="Drag to move • double-click to recenter"
+          title="Drag to move • double-click to recenter"
+        >
+          <div className="flex gap-1">
+            <span className="block w-1 h-1 rounded-full bg-fg-muted/60" />
+            <span className="block w-1 h-1 rounded-full bg-fg-muted/60" />
+            <span className="block w-1 h-1 rounded-full bg-fg-muted/60" />
+          </div>
+        </div>
+
+        {/* Progress bar. Phase 2 holds at 40% with a pulse (no shimmer
+            — that would fake forward motion the wait doesn't have).
+            Phases 1 and 3 use the shimmer overlay. */}
         <div className="relative h-1 bg-bg-overlay">
           <div
             className={`absolute inset-y-0 left-0 bg-fg-primary transition-[width] duration-150 ease-out ${
@@ -488,16 +587,12 @@ export function PostConnectSyncOverlay({
             ))}
           </ol>
 
-          {/* Live portfolio preview — only while waiting on the broker.
-              Accounts and holdings have already been written to the DB
-              by the foreground sync; showing them here turns "2 minutes
-              of waiting" into "2 minutes of seeing your real data." */}
+          {/* Phase-2 portfolio preview. Hidden in phases 1, 3, 4. */}
           {waitingForBroker && <PortfolioPreview />}
 
-          {/* Footer area: phase-specific copy. */}
+          {/* Phase-specific footer. */}
           <div className="mt-5 pt-4 border-t border-border-subtle space-y-3">
             {waitingForBroker ? (
-              // Phase 2: count-up timer + rotating context copy. No ETA.
               <>
                 <div className="flex flex-col items-center text-center gap-1.5">
                   <div
@@ -529,7 +624,6 @@ export function PostConnectSyncOverlay({
                 )}
               </>
             ) : writing ? (
-              // Phase 3: real ETA computed from elapsed / progress.
               <div className="flex items-center justify-between gap-2 text-[11px]">
                 <span className="text-fg-muted">{phase3EtaText}</span>
                 <span className="text-fg-fainter font-num tabular-nums">
@@ -541,8 +635,6 @@ export function PostConnectSyncOverlay({
                 Wrapping up…
               </div>
             ) : (
-              // Phase 1: simple step list above is enough — no ETA, no
-              // timer. This phase resolves in 5-15s.
               <div className="text-[11px] text-fg-muted text-center">
                 {fmtElapsed(elapsedSeconds)}
               </div>
@@ -554,18 +646,45 @@ export function PostConnectSyncOverlay({
   );
 }
 
-/**
- * Live portfolio preview shown inside the overlay while we're waiting
- * on the broker-side transaction cache. Accounts + holdings were
- * already written by the foreground sync, so we have real data to
- * display before transactions land — the user sees their portfolio
- * value and top holdings instead of staring at a pulsing bar.
- *
- * Pulls from the same /api/portfolio/summary + /api/portfolio/holdings
- * endpoints the Overview page uses; React Query caches this for the
- * Overview page, so the user lands on a warm cache when the overlay
- * dismisses.
- */
+/** Live stats HUD, bottom-left. Surfaces real account/holding/
+ *  transaction counts from the steps object so the user has more to
+ *  read than the timer during the wait. */
+function LiveStats({
+  accounts,
+  holdings,
+  transactions,
+  writing,
+  waitingForBroker,
+}: {
+  accounts: number;
+  holdings: number;
+  transactions: number | undefined;
+  writing: boolean;
+  waitingForBroker: boolean;
+}) {
+  const txLabel =
+    writing && typeof transactions === "number"
+      ? `loading ${transactions} transactions…`
+      : waitingForBroker
+        ? "transactions loading…"
+        : typeof transactions === "number"
+          ? `${transactions} transactions`
+          : "";
+  return (
+    <div
+      className="absolute bottom-4 left-4 z-[1] text-white pointer-events-none font-num tabular-nums"
+      style={{ opacity: 0.55, fontSize: 12 }}
+      aria-hidden
+    >
+      {accounts} account{accounts === 1 ? "" : "s"} · {holdings} holding
+      {holdings === 1 ? "" : "s"}
+      {txLabel ? ` · ${txLabel}` : ""}
+    </div>
+  );
+}
+
+/** Live portfolio preview shown in the card during Phase 2.
+ *  Pulls /api/portfolio/summary + /api/portfolio/holdings. */
 interface PortfolioSummary {
   total_value: number;
   connected_count: number;
@@ -580,12 +699,6 @@ interface PortfolioHolding {
 function PortfolioPreview() {
   const { accessToken } = useAuth();
   const f = apiFetch(() => accessToken);
-  // refetchInterval: hit the endpoints periodically while the
-  // overlay is up. The numbers stabilise after the foreground sync
-  // (which happened before this component mounted), but a small
-  // refresh covers the case where the user kicks off a Refresh-now
-  // from elsewhere or where post-sync option-quote refreshes change
-  // values mid-wait.
   const summary = useQuery({
     queryKey: ["summary"],
     queryFn: () => f<PortfolioSummary>("/api/portfolio/summary"),
@@ -604,9 +717,6 @@ function PortfolioPreview() {
     .sort((a, b) => b.market_value - a.market_value)
     .slice(0, 3);
 
-  // Loading state: while the very first /summary call is in flight,
-  // show a small skeleton row instead of empty space — keeps the
-  // card height stable as data arrives.
   if (!summary.data) {
     return (
       <div className="mt-5 pt-4 border-t border-border-subtle">
@@ -702,32 +812,14 @@ function StepRow({
 function stepIcon(state: StepState) {
   if (state === "done") {
     return (
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="5 12 10 17 19 7" />
       </svg>
     );
   }
   if (state === "error") {
     return (
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <line x1="6" y1="6" x2="18" y2="18" />
         <line x1="18" y1="6" x2="6" y2="18" />
       </svg>
@@ -736,44 +828,16 @@ function stepIcon(state: StepState) {
   if (state === "in_progress") {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-        <circle
-          cx="12"
-          cy="12"
-          r="9"
-          stroke="currentColor"
-          strokeOpacity="0.25"
-          strokeWidth="2.5"
-        />
-        <path
-          d="M12 3 a9 9 0 0 1 9 9"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          fill="none"
-        >
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            from="0 12 12"
-            to="360 12 12"
-            dur="0.9s"
-            repeatCount="indefinite"
-          />
+        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2.5" />
+        <path d="M12 3 a9 9 0 0 1 9 9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" fill="none">
+          <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite" />
         </path>
       </svg>
     );
   }
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <circle
-        cx="12"
-        cy="12"
-        r="9"
-        stroke="currentColor"
-        strokeOpacity="0.35"
-        strokeWidth="2"
-        strokeDasharray="3 3"
-      />
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.35" strokeWidth="2" strokeDasharray="3 3" />
     </svg>
   );
 }
@@ -790,11 +854,4 @@ function stepTone(state: StepState): string {
     default:
       return "text-fg-muted";
   }
-}
-
-function fmtElapsed(s: number): string {
-  if (s < 60) return `${s}s elapsed`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}m ${r}s elapsed`;
 }
