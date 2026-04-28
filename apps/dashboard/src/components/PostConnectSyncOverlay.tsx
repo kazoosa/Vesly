@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../lib/auth";
 import { apiFetch } from "../lib/api";
 import { fmtUsd } from "./money";
+import { APP_NAME } from "../lib/brand";
 
 // Lazy-load the 3D scene so its ~150KB three.js bundle only ships
 // when the overlay actually mounts. The rest of the dashboard never
@@ -338,14 +339,15 @@ export function PostConnectSyncOverlay({
     };
   }, [open, ready, displayPct, onClose]);
 
-  // "Drag to explore ✦" hint fades out 8s after the scene activates.
+  // Galaxy fly-through HUD hint — fades out 10s after the scene
+  // activates so it doesn't distract once the user has the gist.
   const [hintVisible, setHintVisible] = useState(true);
   useEffect(() => {
     if (!sceneActive) {
       setHintVisible(true);
       return;
     }
-    const t = window.setTimeout(() => setHintVisible(false), 8_000);
+    const t = window.setTimeout(() => setHintVisible(false), 10_000);
     return () => window.clearTimeout(t);
   }, [sceneActive]);
 
@@ -396,16 +398,34 @@ export function PostConnectSyncOverlay({
         </Suspense>
       )}
 
-      {sceneActive && hintVisible && (
+      {/* HUD watermark — top-left, very faint, sci-fi-film vibe.
+          Stays up the whole time the scene is active so it reads as
+          part of the visual identity, not a transient label. */}
+      {sceneActive && (
         <div
-          className="absolute bottom-4 right-4 z-[1] text-white pointer-events-none transition-opacity duration-700"
+          className="absolute top-4 left-4 z-[1] text-white pointer-events-none font-num tracking-[0.4em] uppercase"
           style={{
-            opacity: 0.4,
+            opacity: 0.18,
+            fontSize: 11,
+          }}
+          aria-hidden
+        >
+          {APP_NAME}
+        </div>
+      )}
+
+      {/* Bottom-right hint with the controls reference. Fades after
+          10 seconds so it doesn't distract longer-running waits. */}
+      {sceneActive && (
+        <div
+          className="absolute bottom-4 right-4 z-[1] text-white pointer-events-none transition-opacity duration-1000"
+          style={{
+            opacity: hintVisible ? 0.45 : 0,
             fontSize: 12,
           }}
           aria-hidden
         >
-          drag to explore ✦
+          drag to look around • scroll to adjust speed • double-click to warp
         </div>
       )}
 

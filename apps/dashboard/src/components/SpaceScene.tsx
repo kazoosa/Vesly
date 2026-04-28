@@ -1,46 +1,111 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 /**
- * Interactive 3D space scene rendered behind the sync overlay during
- * the broker-wait + DB-write phases. Gives the user something to play
- * with during the unavoidable Robinhood broker-side wait — drag
- * asteroids, rotate the scene, scroll to zoom.
+ * First-person galaxy fly-through. Rendered behind the sync overlay
+ * during phases 2 (broker wait) and 3 (DB writes). The user is
+ * floating in deep space, drifting toward a distant galaxy core,
+ * with three layers of stars, nebula clouds, asteroid debris,
+ * occasional shooting stars and supernova pulses.
  *
- * Lazy-loaded via React.lazy from PostConnectSyncOverlay so the ~150KB
- * three.js bundle doesn't ship with the rest of the dashboard. The
- * scene mounts only during phases 2 and 3 of the sync flow; phase 1
- * (initial sync) is too short to bother and phase 4 dismisses the
- * overlay entirely.
+ * Lazy-loaded by PostConnectSyncOverlay so the three.js + post-
+ * processing bundle only ships when the overlay actually mounts.
  *
- * Reduced-motion: the parent component checks the media query and
- * skips mounting this entirely. We don't render anything to honor it
- * here — that's the caller's job.
+ * Reduced-motion: parent skips mounting this entirely.
  */
 
-const STAR_COUNT = 2000;
-const ASTEROID_COUNT = 15;
+// --- Tunables (per-frame budgets are the source of truth — counts
+// here are starting values that may be reduced dynamically if frame
+// time blows past 20ms; see auto-degrade in the rAF loop) -------------
+const STAR_COUNT_FAR = 5000;
+const STAR_COUNT_MID = 1500;
+const STAR_COUNT_NEAR = 500;
+const NEBULA_COUNT = 10;
+const ASTEROID_COUNT = 25;
 
-/** Hex literals as integers — Three.js wants 0xRRGGBB. */
-const COLOR_BG = 0x020818;
-const COLOR_ASTEROID = 0x4a4a6a;
-const COLOR_PLANET_PURPLE = 0x2d1b69;
-const COLOR_PLANET_TEAL = 0x0d3d4a;
+const FORWARD_SPEED_MIN = 0.005;
+const FORWARD_SPEED_MAX = 0.15;
+const FORWARD_SPEED_DEFAULT = 0.02;
+
+// --- Programmatic textures ------------------------------------------
+// We don't ship any image assets — every texture is generated at
+// runtime via 2D canvas so the lazy chunk has zero asset deps.
+
+function makeRadialGradientTexture(
+  size: number,
+  innerColor: string,
+  outerColor: string,
+): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const grad = ctx.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2,
+  );
+  grad.addColorStop(0, innerColor);
+  grad.addColorStop(0.4, innerColor);
+  grad.addColorStop(1, outerColor);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** A soft round disc — base sprite for stars and the galaxy-core glow. */
+function makeStarTexture(size = 64): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const grad = ctx.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2,
+  );
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.3, "rgba(255,255,255,0.85)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// Nebula colors per spec.
+const NEBULA_COLORS: [string, string][] = [
+  ["#9020e0", "#4a0080"], // deep purple
+  ["#3060ff", "#0040ff"], // electric blue
+  ["#10a0a0", "#004a4a"], // teal
+];
 
 interface AsteroidState {
   mesh: THREE.Mesh;
-  driftAxis: THREE.Vector3;
-  driftSpeed: number;
+  /** World-space velocity in units/sec. Some far+slow, some close+fast. */
+  velocity: THREE.Vector3;
   spinAxis: THREE.Vector3;
   spinSpeed: number;
-  /** When the user releases a drag, we keep the asteroid moving with
-   *  this velocity (in world units per second) and decay it 0.95×/frame
-   *  until it settles. */
-  releaseVelocity: THREE.Vector3;
-  /** Hover-pulse target scale. Lerped toward each frame. */
-  hoverScaleTarget: number;
-  /** Current visual scale. */
-  currentScale: number;
+}
+
+interface NearStarState {
+  /** Endpoint A in world space — the streak's leading point. */
+  posA: THREE.Vector3;
+  /** Endpoint B in world space — the streak's trailing point.
+   *  velocity vector × streakLen behind posA. */
+  posB: THREE.Vector3;
+  velocity: THREE.Vector3;
 }
 
 export function SpaceScene() {
@@ -50,106 +115,301 @@ export function SpaceScene() {
     const container = containerRef.current;
     if (!container) return;
 
-    // --- Scene + renderer setup ---------------------------------
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(COLOR_BG);
+    const W = () => container.clientWidth;
+    const H = () => container.clientHeight;
 
-    const camera = new THREE.PerspectiveCamera(
-      60,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      200,
-    );
-    camera.position.set(0, 0, 20);
-
+    // --- Renderer + composer setup ---------------------------------
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setClearColor(COLOR_BG, 1);
+    renderer.setSize(W(), H());
+    renderer.setClearColor(0x000000, 1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
+    renderer.domElement.style.touchAction = "none";
 
-    // sceneGroup holds everything user-rotatable (asteroids, planets,
-    // stars). Dragging empty space rotates this group; the camera and
-    // lights stay fixed in world space.
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    const camera = new THREE.PerspectiveCamera(70, W() / H(), 0.1, 2000);
+    camera.position.set(0, 0, 0);
+
+    // sceneGroup holds everything user-rotatable (look-around). The
+    // camera and bloom passes stay in world space.
     const sceneGroup = new THREE.Group();
     scene.add(sceneGroup);
 
-    // --- Star field ---------------------------------------------
-    const starPositions = new Float32Array(STAR_COUNT * 3);
-    const starColors = new Float32Array(STAR_COUNT * 3);
-    const starSizes = new Float32Array(STAR_COUNT);
-    for (let i = 0; i < STAR_COUNT; i++) {
-      // Distribute stars on a large sphere shell around the camera.
-      const r = 60 + Math.random() * 40;
+    // Bloom pipeline. Bloom is what makes this look cinematic vs
+    // "cool starfield demo". Tuned conservatively — too aggressive
+    // and white stars smear into a milky haze.
+    const composer = new EffectComposer(renderer);
+    composer.setSize(W(), H());
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(W(), H()),
+      0.9, // strength
+      0.6, // radius
+      0.15, // threshold (only pixels brighter than this bloom)
+    );
+    composer.addPass(bloomPass);
+    const outputPass = new OutputPass();
+    composer.addPass(outputPass);
+
+    // --- Star textures (shared across all star layers) -------------
+    const starTexture = makeStarTexture(64);
+
+    // --- Layer 1: 5,000 distant tiny stars (nearly stationary) ------
+    const farStarPositions = new Float32Array(STAR_COUNT_FAR * 3);
+    for (let i = 0; i < STAR_COUNT_FAR; i++) {
+      // Distribute on a sphere shell well behind the working volume.
+      const r = 400 + Math.random() * 400;
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      starPositions[i * 3 + 2] = r * Math.cos(phi);
-      // Color: white to pale blue, biased toward white.
-      const blueShift = Math.random();
-      starColors[i * 3] = 0.85 + Math.random() * 0.15;
-      starColors[i * 3 + 1] = 0.85 + Math.random() * 0.15;
-      starColors[i * 3 + 2] = 0.95 + blueShift * 0.05;
-      starSizes[i] = 0.5 + Math.random() * 1.5;
+      farStarPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      farStarPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      farStarPositions[i * 3 + 2] = r * Math.cos(phi);
     }
-    const starGeo = new THREE.BufferGeometry();
-    starGeo.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
-    starGeo.setAttribute("color", new THREE.BufferAttribute(starColors, 3));
-    starGeo.setAttribute("size", new THREE.BufferAttribute(starSizes, 1));
-    const starMat = new THREE.PointsMaterial({
-      size: 1.2,
+    const farStarsGeo = new THREE.BufferGeometry();
+    farStarsGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(farStarPositions, 3),
+    );
+    const farStarsMat = new THREE.PointsMaterial({
+      size: 0.7,
       sizeAttenuation: true,
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      map: starTexture,
+    });
+    const farStars = new THREE.Points(farStarsGeo, farStarsMat);
+    sceneGroup.add(farStars);
+
+    // --- Layer 2: 1,500 mid-distance stars ----------------------
+    // Recycled in a forward-Z range so they appear to drift past as
+    // the camera moves. Each cycle wraps Z back to "ahead of camera".
+    const MID_RANGE_Z = 200;
+    const midStarPositions = new Float32Array(STAR_COUNT_MID * 3);
+    for (let i = 0; i < STAR_COUNT_MID; i++) {
+      midStarPositions[i * 3] = (Math.random() - 0.5) * 200;
+      midStarPositions[i * 3 + 1] = (Math.random() - 0.5) * 200;
+      midStarPositions[i * 3 + 2] = -Math.random() * MID_RANGE_Z;
+    }
+    const midStarsGeo = new THREE.BufferGeometry();
+    midStarsGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(midStarPositions, 3),
+    );
+    const midStarsMat = new THREE.PointsMaterial({
+      size: 1.6,
+      sizeAttenuation: true,
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      map: starTexture,
+    });
+    const midStars = new THREE.Points(midStarsGeo, midStarsMat);
+    sceneGroup.add(midStars);
+
+    // --- Layer 3: 500 close stars rendered as motion-blur streaks ---
+    // We use THREE.LineSegments (one segment per star). The segment
+    // is `velocity * STREAK_LEN` long, trailing behind the head
+    // position. Recycled in Z just like the mid-distance layer.
+    const NEAR_RANGE_Z = 80;
+    const STREAK_LEN_FACTOR = 6; // streak length per unit speed
+    const nearStarSegments: NearStarState[] = [];
+    const nearStarPositions = new Float32Array(STAR_COUNT_NEAR * 6); // 2 verts per segment
+    const nearStarColors = new Float32Array(STAR_COUNT_NEAR * 6);
+    for (let i = 0; i < STAR_COUNT_NEAR; i++) {
+      const x = (Math.random() - 0.5) * 80;
+      const y = (Math.random() - 0.5) * 80;
+      const z = -Math.random() * NEAR_RANGE_Z;
+      // Velocity points toward +Z (i.e. AT the camera). The faster
+      // the streak, the longer; baseline is set so close stars
+      // visibly streak when forward drift is at default.
+      const speed = 0.6 + Math.random() * 1.4;
+      const velocity = new THREE.Vector3(0, 0, speed);
+      const posA = new THREE.Vector3(x, y, z);
+      const posB = posA
+        .clone()
+        .addScaledVector(velocity, -STREAK_LEN_FACTOR);
+      nearStarSegments.push({ posA, posB, velocity });
+
+      const off = i * 6;
+      nearStarPositions[off] = posA.x;
+      nearStarPositions[off + 1] = posA.y;
+      nearStarPositions[off + 2] = posA.z;
+      nearStarPositions[off + 3] = posB.x;
+      nearStarPositions[off + 4] = posB.y;
+      nearStarPositions[off + 5] = posB.z;
+
+      // Streak fades from white (at head) to transparent (at tail)
+      // — vertex colors. Tail color is set lower-alpha by halving.
+      // We can only encode RGB in vertex colors; opacity comes from
+      // the material. Approximate the fade by darkening the tail
+      // vertex color to ~0.2 instead.
+      nearStarColors[off] = 1;
+      nearStarColors[off + 1] = 1;
+      nearStarColors[off + 2] = 1;
+      nearStarColors[off + 3] = 0.2;
+      nearStarColors[off + 4] = 0.2;
+      nearStarColors[off + 5] = 0.2;
+    }
+    const nearStarsGeo = new THREE.BufferGeometry();
+    nearStarsGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(nearStarPositions, 3),
+    );
+    nearStarsGeo.setAttribute(
+      "color",
+      new THREE.BufferAttribute(nearStarColors, 3),
+    );
+    const nearStarsMat = new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
       opacity: 0.9,
+      blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
-    const stars = new THREE.Points(starGeo, starMat);
-    sceneGroup.add(stars);
+    const nearStars = new THREE.LineSegments(nearStarsGeo, nearStarsMat);
+    sceneGroup.add(nearStars);
 
-    // --- Asteroids ----------------------------------------------
+    // --- Nebula clouds (8-12 large additive billboards) -------------
+    const nebulaTextures: THREE.Texture[] = [];
+    const nebulaMaterials: THREE.SpriteMaterial[] = [];
+    const nebulas: Array<{
+      sprite: THREE.Sprite;
+      driftAxis: THREE.Vector3;
+      spinSpeed: number;
+    }> = [];
+    for (let i = 0; i < NEBULA_COUNT; i++) {
+      const colorPair = NEBULA_COLORS[i % NEBULA_COLORS.length]!;
+      const tex = makeRadialGradientTexture(
+        256,
+        colorPair[0] + "ff",
+        colorPair[1] + "00",
+      );
+      nebulaTextures.push(tex);
+      const mat = new THREE.SpriteMaterial({
+        map: tex,
+        transparent: true,
+        opacity: 0.15 + Math.random() * 0.1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      nebulaMaterials.push(mat);
+      const sprite = new THREE.Sprite(mat);
+      const r = 80 + Math.random() * 200;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      sprite.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        // Bias nebulas in front of the camera so they're in the
+        // line of travel — gives the feeling of flying through them.
+        -Math.abs(r * Math.cos(phi)) - 50,
+      );
+      const scale = 80 + Math.random() * 120;
+      sprite.scale.set(scale, scale, 1);
+      sceneGroup.add(sprite);
+      nebulas.push({
+        sprite,
+        driftAxis: new THREE.Vector3(
+          (Math.random() - 0.5) * 0.5,
+          (Math.random() - 0.5) * 0.5,
+          0,
+        ),
+        spinSpeed: (Math.random() - 0.5) * 0.05,
+      });
+    }
+
+    // --- Galaxy core (bright distant glow) --------------------------
+    const coreLight = new THREE.PointLight(0xfff8d0, 2.5, 600, 1.5);
+    coreLight.position.set(0, 0, -500);
+    scene.add(coreLight);
+    const coreGlowTex = makeStarTexture(256);
+    const coreGlowMat = new THREE.SpriteMaterial({
+      map: coreGlowTex,
+      color: 0xfff0c0,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const coreGlow = new THREE.Sprite(coreGlowMat);
+    coreGlow.position.copy(coreLight.position);
+    coreGlow.scale.set(70, 70, 1);
+    sceneGroup.add(coreGlow);
+    // Larger, dimmer outer halo for additional bloom contribution.
+    const coreHaloMat = new THREE.SpriteMaterial({
+      map: coreGlowTex,
+      color: 0x9090ff,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const coreHalo = new THREE.Sprite(coreHaloMat);
+    coreHalo.position.copy(coreLight.position);
+    coreHalo.scale.set(180, 180, 1);
+    sceneGroup.add(coreHalo);
+
+    // --- Asteroids/debris -------------------------------------------
     const asteroidGeometries: THREE.IcosahedronGeometry[] = [];
     const asteroidMaterials: THREE.Material[] = [];
     const asteroids: AsteroidState[] = [];
     for (let i = 0; i < ASTEROID_COUNT; i++) {
-      const geo = new THREE.IcosahedronGeometry(0.6 + Math.random() * 0.9, 1);
-      // Roughen the geometry ±15% per vertex so the icosahedron
-      // looks like a natural rock instead of a perfect die.
+      const closeRoll = Math.random();
+      // Some close+fast, some far+slow.
+      const isClose = closeRoll < 0.35;
+      const z = isClose
+        ? -10 - Math.random() * 25
+        : -40 - Math.random() * 80;
+      const lateralRange = isClose ? 10 : 35;
+      const radius = isClose ? 0.3 + Math.random() * 0.6 : 0.8 + Math.random() * 1.5;
+
+      const geo = new THREE.IcosahedronGeometry(radius, 1);
+      // Roughen — same trick as before so debris looks natural.
       const pos = geo.attributes.position;
       if (pos) {
         for (let v = 0; v < pos.count; v++) {
           const x = pos.getX(v);
           const y = pos.getY(v);
-          const z = pos.getZ(v);
+          const zz = pos.getZ(v);
           const jitter = 1 + (Math.random() - 0.5) * 0.3;
-          pos.setXYZ(v, x * jitter, y * jitter, z * jitter);
+          pos.setXYZ(v, x * jitter, y * jitter, zz * jitter);
         }
         pos.needsUpdate = true;
         geo.computeVertexNormals();
       }
       asteroidGeometries.push(geo);
 
+      // Slight color variance — orange-red surfaces per spec.
+      const tint = new THREE.Color().setHSL(
+        0.04 + Math.random() * 0.06,
+        0.5 + Math.random() * 0.3,
+        0.25 + Math.random() * 0.15,
+      );
       const mat = new THREE.MeshStandardMaterial({
-        color: COLOR_ASTEROID,
-        roughness: 0.9,
-        metalness: 0.1,
+        color: tint,
+        roughness: 0.95,
+        metalness: 0.05,
       });
       asteroidMaterials.push(mat);
 
       const mesh = new THREE.Mesh(geo, mat);
-      // Random position 8-25 units from origin.
-      const r = 8 + Math.random() * 17;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
       mesh.position.set(
-        r * Math.sin(phi) * Math.cos(theta),
-        r * Math.sin(phi) * Math.sin(theta),
-        r * Math.cos(phi),
+        (Math.random() - 0.5) * lateralRange * 2,
+        (Math.random() - 0.5) * lateralRange * 2,
+        z,
       );
       mesh.rotation.set(
         Math.random() * Math.PI * 2,
@@ -158,294 +418,451 @@ export function SpaceScene() {
       );
       sceneGroup.add(mesh);
 
+      // Velocity: mostly toward camera (+Z), with small lateral
+      // drift. Close ones move faster than far ones.
+      const baseSpeed = isClose ? 6 + Math.random() * 8 : 1.5 + Math.random() * 3;
+      const velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.6,
+        (Math.random() - 0.5) * 0.6,
+        baseSpeed,
+      );
+
       asteroids.push({
         mesh,
-        driftAxis: new THREE.Vector3(
-          (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 2,
-        ).normalize(),
-        driftSpeed: 0.05 + Math.random() * 0.1,
+        velocity,
         spinAxis: new THREE.Vector3(
           Math.random(),
           Math.random(),
           Math.random(),
         ).normalize(),
-        spinSpeed: 0.1 + Math.random() * 0.4,
-        releaseVelocity: new THREE.Vector3(),
-        hoverScaleTarget: 1,
-        currentScale: 1,
+        spinSpeed: 0.2 + Math.random() * 0.8,
       });
     }
 
-    // --- Planets (3 of them, far away) --------------------------
-    const planetGeometries: THREE.SphereGeometry[] = [];
-    const planetMaterials: THREE.Material[] = [];
-    const glowMaterials: THREE.Material[] = [];
-    const planets: Array<{ mesh: THREE.Mesh; spinSpeed: number }> = [];
-    const planetSpecs = [
-      { color: COLOR_PLANET_PURPLE, radius: 4.5, distance: 50 },
-      { color: COLOR_PLANET_TEAL, radius: 3.2, distance: 55 },
-      { color: COLOR_PLANET_PURPLE, radius: 2.6, distance: 45 },
-    ];
-    for (const spec of planetSpecs) {
-      const geo = new THREE.SphereGeometry(spec.radius, 32, 32);
-      planetGeometries.push(geo);
-      const mat = new THREE.MeshStandardMaterial({
-        color: spec.color,
-        roughness: 0.8,
-        metalness: 0,
-      });
-      planetMaterials.push(mat);
-      const mesh = new THREE.Mesh(geo, mat);
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      mesh.position.set(
-        spec.distance * Math.sin(phi) * Math.cos(theta),
-        spec.distance * Math.sin(phi) * Math.sin(theta) * 0.4, // squash so they tend toward the equatorial band
-        spec.distance * Math.cos(phi),
-      );
-      sceneGroup.add(mesh);
-      planets.push({ mesh, spinSpeed: 0.05 + Math.random() * 0.05 });
-
-      // Cheap fake atmosphere — slightly larger sphere, low opacity.
-      const glowGeo = new THREE.SphereGeometry(spec.radius * 1.08, 16, 16);
-      planetGeometries.push(glowGeo);
-      const glowMat = new THREE.MeshBasicMaterial({
-        color: spec.color,
-        transparent: true,
-        opacity: 0.08,
-        side: THREE.BackSide,
-      });
-      glowMaterials.push(glowMat);
-      const glow = new THREE.Mesh(glowGeo, glowMat);
-      mesh.add(glow);
-    }
-
-    // --- Lighting -----------------------------------------------
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(5, 10, 5);
-    scene.add(sun);
-    const ambient = new THREE.AmbientLight(0xffffff, 0.15);
+    // --- Lighting (for asteroid surfaces) ---------------------------
+    // Key light coming from the galaxy core direction so asteroids
+    // are lit consistently with where the bright source is.
+    const keyLight = new THREE.DirectionalLight(0xfff0c0, 1.0);
+    keyLight.position.set(0, 0, -1);
+    scene.add(keyLight);
+    const ambient = new THREE.AmbientLight(0x404060, 0.4);
     scene.add(ambient);
 
-    // --- Interaction state --------------------------------------
-    const raycaster = new THREE.Raycaster();
-    const pointerNDC = new THREE.Vector2();
-    const lastPointerNDC = new THREE.Vector2();
-    /** Which asteroid is currently being dragged (or null). */
-    let grabbedAsteroid: AsteroidState | null = null;
-    /** True while the user is dragging on empty space (rotating the scene). */
-    let draggingScene = false;
-    /** Velocity-based scene rotation — updated by drag, decays each frame. */
-    const sceneRotationVelocity = new THREE.Vector2(0, 0);
-    /** Last-known asteroid drag position to compute release velocity. */
-    let lastGrabPos = new THREE.Vector3();
-    /** Currently hovered asteroid (for cursor + pulse). */
-    let hovered: AsteroidState | null = null;
-    /** Camera Z target — scrolling animates toward this. */
-    let cameraZTarget = 20;
-    const CAMERA_Z_MIN = 10;
-    const CAMERA_Z_MAX = 35;
+    // --- Shooting stars (one-shot meteor lines) ---------------------
+    const shootingStars: Array<{
+      line: THREE.Line;
+      geo: THREE.BufferGeometry;
+      mat: THREE.LineBasicMaterial;
+      ttl: number; // seconds remaining
+      velocity: THREE.Vector3;
+      head: THREE.Vector3;
+      tail: THREE.Vector3;
+    }> = [];
 
-    function updatePointerNDC(clientX: number, clientY: number) {
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    function spawnShootingStar() {
+      const geo = new THREE.BufferGeometry();
+      const positions = new Float32Array(6); // 2 verts
+      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const line = new THREE.Line(geo, mat);
+      // Start near the edge of the field of view, off to one side.
+      const startX = Math.random() < 0.5 ? -60 : 60;
+      const startY = -30 + Math.random() * 60;
+      const startZ = -60 - Math.random() * 60;
+      const head = new THREE.Vector3(startX, startY, startZ);
+      // Move diagonally across — toward the opposite side, slight
+      // forward bias.
+      const dir = new THREE.Vector3(
+        startX > 0 ? -1 : 1,
+        (Math.random() - 0.5) * 0.7,
+        0.3,
+      ).normalize();
+      const speed = 80 + Math.random() * 60;
+      const velocity = dir.multiplyScalar(speed);
+      const tail = head.clone().addScaledVector(velocity, -0.05);
+      sceneGroup.add(line);
+      shootingStars.push({
+        line,
+        geo,
+        mat,
+        ttl: 1.4,
+        velocity,
+        head,
+        tail,
+      });
     }
 
-    function pickAsteroid(): AsteroidState | null {
-      raycaster.setFromCamera(pointerNDC, camera);
-      const meshes = asteroids.map((a) => a.mesh);
-      const hits = raycaster.intersectObjects(meshes, false);
-      if (hits.length === 0) return null;
-      const hitMesh = hits[0]!.object;
-      return asteroids.find((a) => a.mesh === hitMesh) ?? null;
+    // --- Supernova pulses (radial flash) ----------------------------
+    const supernovas: Array<{
+      sprite: THREE.Sprite;
+      mat: THREE.SpriteMaterial;
+      tex: THREE.Texture;
+      age: number; // seconds since spawn
+      duration: number;
+      maxScale: number;
+    }> = [];
+
+    function spawnSupernova() {
+      const tex = makeStarTexture(128);
+      const mat = new THREE.SpriteMaterial({
+        map: tex,
+        color: 0xffe0b0,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const sprite = new THREE.Sprite(mat);
+      const r = 80 + Math.random() * 100;
+      const theta = Math.random() * Math.PI * 2;
+      sprite.position.set(
+        r * Math.cos(theta),
+        (Math.random() - 0.5) * 60,
+        -Math.abs(r * Math.sin(theta)) - 60,
+      );
+      sprite.scale.set(1, 1, 1);
+      sceneGroup.add(sprite);
+      supernovas.push({
+        sprite,
+        mat,
+        tex,
+        age: 0,
+        duration: 2,
+        maxScale: 60 + Math.random() * 40,
+      });
     }
 
-    /** Project pointer NDC onto the plane at the grabbed asteroid's
-     *  world Z, returning the world-space point the asteroid should
-     *  follow. */
-    function pointerOnDragPlane(zDepth: number): THREE.Vector3 {
-      raycaster.setFromCamera(pointerNDC, camera);
-      // Plane perpendicular to camera direction passing through z=zDepth.
-      // Approximation: parameterize ray to land at world Z = zDepth.
-      const origin = raycaster.ray.origin;
-      const dir = raycaster.ray.direction;
-      // origin.z + t * dir.z = zDepth  ->  t = (zDepth - origin.z) / dir.z
-      if (Math.abs(dir.z) < 1e-6) return origin.clone();
-      const t = (zDepth - origin.z) / dir.z;
-      return origin.clone().addScaledVector(dir, t);
-    }
+    // --- Interaction state -----------------------------------------
+    let dragging = false;
+    let lastPointerX = 0;
+    let lastPointerY = 0;
+    /** Angular velocity for the look-around rotation (radians/sec). */
+    const lookVelocity = new THREE.Vector2(0, 0);
+    /** Current look-rotation (Euler-style, applied to sceneGroup). */
+    const lookRotation = new THREE.Vector2(0, 0);
+
+    let forwardSpeed = FORWARD_SPEED_DEFAULT;
+    let forwardSpeedTarget = FORWARD_SPEED_DEFAULT;
+
+    /** Warp effect: when active, multiply near-star streak length and
+     *  forward speed for ~1.5s. */
+    let warpRemaining = 0;
 
     function onPointerDown(e: PointerEvent) {
-      updatePointerNDC(e.clientX, e.clientY);
-      lastPointerNDC.copy(pointerNDC);
-      const asteroid = pickAsteroid();
-      if (asteroid) {
-        grabbedAsteroid = asteroid;
-        lastGrabPos.copy(asteroid.mesh.position);
-        renderer.domElement.style.cursor = "grabbing";
-      } else {
-        draggingScene = true;
-        renderer.domElement.style.cursor = "grabbing";
-      }
+      dragging = true;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+      renderer.domElement.style.cursor = "grabbing";
       renderer.domElement.setPointerCapture(e.pointerId);
     }
-
     function onPointerMove(e: PointerEvent) {
-      const prev = pointerNDC.clone();
-      updatePointerNDC(e.clientX, e.clientY);
-
-      if (grabbedAsteroid) {
-        const z = grabbedAsteroid.mesh.position.z;
-        const target = pointerOnDragPlane(z);
-        // Velocity = current - last per second of frame time. We
-        // approximate using the position delta and let the frame
-        // loop's clock-delta handle the actual time math when the
-        // user releases.
-        grabbedAsteroid.releaseVelocity
-          .copy(target)
-          .sub(grabbedAsteroid.mesh.position)
-          .multiplyScalar(60); // assume 60fps for an instantaneous estimate
-        grabbedAsteroid.mesh.position.copy(target);
-        lastGrabPos.copy(target);
-        return;
-      }
-
-      if (draggingScene) {
-        // Rotate the scene group based on pointer NDC delta.
-        // X delta -> rotate around Y axis. Y delta -> rotate around X.
-        const dx = pointerNDC.x - prev.x;
-        const dy = pointerNDC.y - prev.y;
-        sceneGroup.rotation.y += dx * 1.2;
-        sceneGroup.rotation.x += -dy * 1.2;
-        sceneRotationVelocity.set(dx * 60, -dy * 60);
-        return;
-      }
-
-      // Hover state — only relevant when not dragging.
-      const hoverTarget = pickAsteroid();
-      if (hoverTarget !== hovered) {
-        if (hovered) hovered.hoverScaleTarget = 1;
-        if (hoverTarget) hoverTarget.hoverScaleTarget = 1.05;
-        hovered = hoverTarget;
-        renderer.domElement.style.cursor = hoverTarget ? "grab" : "default";
-      }
+      if (!dragging) return;
+      const dx = e.clientX - lastPointerX;
+      const dy = e.clientY - lastPointerY;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+      // dx → rotate around Y. dy → rotate around X. Scale by a
+      // gentle factor so a screen-width drag is ~half a rotation.
+      lookRotation.x += dx * 0.003;
+      lookRotation.y += dy * 0.003;
+      lookVelocity.set(dx * 0.003 * 60, dy * 0.003 * 60); // in per-sec equivalents
     }
-
     function onPointerUp(e: PointerEvent) {
-      grabbedAsteroid = null;
-      draggingScene = false;
-      renderer.domElement.style.cursor = hovered ? "grab" : "default";
+      dragging = false;
+      renderer.domElement.style.cursor = "grab";
       try {
         renderer.domElement.releasePointerCapture(e.pointerId);
       } catch {
-        /* pointer wasn't captured — fine */
+        /* ok */
       }
     }
-
     function onWheel(e: WheelEvent) {
       e.preventDefault();
-      // Zoom range CAMERA_Z_MIN..CAMERA_Z_MAX, smaller = closer.
-      cameraZTarget = Math.max(
-        CAMERA_Z_MIN,
-        Math.min(CAMERA_Z_MAX, cameraZTarget + e.deltaY * 0.02),
+      // Wheel up (negative deltaY) → speed up; wheel down → slow.
+      forwardSpeedTarget = Math.max(
+        FORWARD_SPEED_MIN,
+        Math.min(
+          FORWARD_SPEED_MAX,
+          forwardSpeedTarget - e.deltaY * 0.0001,
+        ),
       );
     }
+    function onDoubleClick() {
+      warpRemaining = 1.5;
+    }
 
+    renderer.domElement.style.cursor = "grab";
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("pointercancel", onPointerUp);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
+    renderer.domElement.addEventListener("dblclick", onDoubleClick);
 
     function onResize() {
-      if (!container) return;
-      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.aspect = W() / H();
       camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setSize(W(), H());
+      composer.setSize(W(), H());
+      bloomPass.setSize(W(), H());
     }
     window.addEventListener("resize", onResize);
 
-    // --- Animation loop -----------------------------------------
+    // --- Animation loop --------------------------------------------
     const clock = new THREE.Clock();
     let elapsed = 0;
+    let nextEventAt = 15 + Math.random() * 15;
     let rafHandle = 0;
     let cancelled = false;
 
+    // Auto-degrade: if frame time exceeds 20ms three times in a row,
+    // halve the near-star count by hiding half of them. Avoids the
+    // bigger surgery of disposing/rebuilding.
+    let slowFrames = 0;
+    let degradedNear = false;
+
+    // Subtle camera shake — small position noise per frame so the
+    // floating-in-space feel doesn't go static when the user isn't
+    // dragging.
+    function shake(t: number, axis: number): number {
+      // Cheap pseudo-noise: sum of sins at irrational frequencies.
+      return (
+        Math.sin(t * 1.31 + axis * 7.2) * 0.5 +
+        Math.sin(t * 0.51 + axis * 3.1) * 0.5
+      );
+    }
+
     function tick() {
       if (cancelled) return;
-      // Cap to 60fps using clock delta. If the tab is hidden, skip
-      // doing any work (browsers throttle rAF anyway, but extra
-      // belt-and-braces for older versions).
-      const dt = clock.getDelta();
       if (document.hidden) {
         rafHandle = requestAnimationFrame(tick);
         return;
       }
+      const frameStart = performance.now();
+      const dt = Math.min(clock.getDelta(), 0.05); // clamp at 50ms to keep math sane
       elapsed += dt;
 
-      // Camera oscillation — gentle floating.
-      camera.position.x = Math.sin(elapsed * 0.1) * 2;
-      camera.position.y = Math.cos(elapsed * 0.07) * 1;
-      // Smooth zoom toward target.
-      camera.position.z += (cameraZTarget - camera.position.z) * 0.08;
-      camera.lookAt(0, 0, 0);
+      // Forward speed eases toward target (smoother than instant).
+      forwardSpeed += (forwardSpeedTarget - forwardSpeed) * 0.06;
 
-      // Sun orbit — full rotation every 120s.
-      const sunAngle = (elapsed / 120) * Math.PI * 2;
-      sun.position.set(
-        Math.cos(sunAngle) * 12,
-        10,
-        Math.sin(sunAngle) * 12,
-      );
-
-      // Star field gentle Y rotation.
-      stars.rotation.y += 0.02 * dt;
-
-      // Scene rotation velocity decay (post-release flywheel).
-      if (!draggingScene) {
-        sceneGroup.rotation.y += sceneRotationVelocity.x * dt * 0.5;
-        sceneGroup.rotation.x += sceneRotationVelocity.y * dt * 0.5;
-        sceneRotationVelocity.multiplyScalar(0.92);
+      // Warp decay.
+      let speedMult = 1;
+      let streakMult = 1;
+      if (warpRemaining > 0) {
+        // Ramp in fast, hold, then snap back.
+        const phase = 1.5 - warpRemaining;
+        if (phase < 0.2) speedMult = 1 + (phase / 0.2) * 7; // 1 → 8
+        else if (phase < 1.3) speedMult = 8;
+        else speedMult = 8 - ((phase - 1.3) / 0.2) * 7; // back to 1
+        streakMult = speedMult;
+        warpRemaining -= dt;
       }
 
-      // Asteroid drift + spin + release velocity decay + hover pulse.
-      for (const a of asteroids) {
-        // Skip drift while grabbed — the user is positioning it.
-        if (a !== grabbedAsteroid) {
-          // Apply release velocity (decays each frame).
-          if (a.releaseVelocity.lengthSq() > 1e-4) {
-            a.mesh.position.addScaledVector(a.releaseVelocity, dt);
-            a.releaseVelocity.multiplyScalar(0.95);
-          } else {
-            a.mesh.position.addScaledVector(a.driftAxis, a.driftSpeed * dt);
-            // Soft tether: if it drifts too far, bend it back toward origin.
-            const distSq = a.mesh.position.lengthSq();
-            if (distSq > 30 * 30) {
-              a.mesh.position.multiplyScalar(0.99);
+      // Forward drift: move camera toward -Z. We move the CAMERA
+      // (not the sceneGroup) so look-around rotation stays sane.
+      camera.position.z -= forwardSpeed * speedMult * 60 * dt;
+
+      // Camera shake — tiny floating offset.
+      camera.position.x = shake(elapsed, 0) * 0.04;
+      camera.position.y = shake(elapsed, 1) * 0.04;
+
+      // Look-around: apply rotation deltas to sceneGroup and decay
+      // velocity if the user isn't actively dragging (inertia).
+      sceneGroup.rotation.y = lookRotation.x;
+      sceneGroup.rotation.x = lookRotation.y;
+      if (!dragging) {
+        // Inertia: continue rotating after release; decelerate.
+        lookRotation.x += lookVelocity.x * dt * 0.3;
+        lookRotation.y += lookVelocity.y * dt * 0.3;
+        lookVelocity.multiplyScalar(0.93);
+      }
+
+      // Recycle mid-distance stars: any star that's slipped behind
+      // the camera (z > camera.z + small slack) gets re-spawned
+      // ahead of the camera at -Z.
+      {
+        const positions = midStarsGeo.attributes.position;
+        if (positions) {
+          const cz = camera.position.z;
+          for (let i = 0; i < STAR_COUNT_MID; i++) {
+            const z = positions.getZ(i);
+            if (z > cz + 5) {
+              positions.setX(i, (Math.random() - 0.5) * 200);
+              positions.setY(i, (Math.random() - 0.5) * 200);
+              positions.setZ(i, cz - MID_RANGE_Z);
             }
           }
+          positions.needsUpdate = true;
         }
+      }
+
+      // Recycle + advance near-star streaks. Each streak's posA
+      // advances by velocity*dt; posB trails by velocity*streakLen.
+      // When posA passes the camera, recycle ahead.
+      {
+        const positions = nearStarsGeo.attributes.position;
+        if (positions) {
+          const cz = camera.position.z;
+          const streakLen = STREAK_LEN_FACTOR * streakMult;
+          for (let i = 0; i < STAR_COUNT_NEAR; i++) {
+            const s = nearStarSegments[i]!;
+            // Per-frame position update — velocity in z is "speed" the
+            // star approaches at, so a positive z-velocity means
+            // approaching the camera (camera moves -Z, world stays).
+            // We add velocity * dt to posA.z (so star's z goes from
+            // -N toward 0). When it crosses the camera, recycle.
+            s.posA.z += s.velocity.z * dt * speedMult;
+            if (s.posA.z > cz + 4) {
+              s.posA.x = (Math.random() - 0.5) * 80;
+              s.posA.y = (Math.random() - 0.5) * 80;
+              s.posA.z = cz - NEAR_RANGE_Z;
+            }
+            s.posB.copy(s.posA).addScaledVector(s.velocity, -streakLen);
+
+            const off = i * 6;
+            positions.array[off] = s.posA.x;
+            positions.array[off + 1] = s.posA.y;
+            positions.array[off + 2] = s.posA.z;
+            positions.array[off + 3] = s.posB.x;
+            positions.array[off + 4] = s.posB.y;
+            positions.array[off + 5] = s.posB.z;
+          }
+          positions.needsUpdate = true;
+        }
+      }
+
+      // Asteroids: drift toward camera, recycle when they pass.
+      for (const a of asteroids) {
+        a.mesh.position.addScaledVector(a.velocity, dt * speedMult);
         a.mesh.rotateOnAxis(a.spinAxis, a.spinSpeed * dt);
-
-        // Hover pulse.
-        a.currentScale += (a.hoverScaleTarget - a.currentScale) * 0.15;
-        a.mesh.scale.setScalar(a.currentScale);
+        if (a.mesh.position.z > camera.position.z + 4) {
+          // Recycle ahead.
+          const isClose = Math.random() < 0.35;
+          a.mesh.position.set(
+            (Math.random() - 0.5) * (isClose ? 20 : 70),
+            (Math.random() - 0.5) * (isClose ? 20 : 70),
+            camera.position.z - (isClose ? 30 : 100),
+          );
+        }
       }
 
-      // Planet self-rotation.
-      for (const p of planets) {
-        p.mesh.rotation.y += p.spinSpeed * dt;
+      // Nebula clouds: gentle drift + spin.
+      for (const n of nebulas) {
+        n.sprite.position.addScaledVector(n.driftAxis, dt);
+        n.sprite.material.rotation += n.spinSpeed * dt;
+        // Recycle if it falls behind.
+        if (n.sprite.position.z > camera.position.z + 60) {
+          const r = 80 + Math.random() * 200;
+          const theta = Math.random() * Math.PI * 2;
+          n.sprite.position.set(
+            r * Math.cos(theta),
+            (Math.random() - 0.5) * 80,
+            camera.position.z - 100 - Math.random() * 200,
+          );
+        }
       }
 
-      renderer.render(scene, camera);
+      // Galaxy core sits at fixed Z relative to camera so we keep
+      // approaching but never reach it. The sense of destination
+      // matters, the actual arrival doesn't.
+      coreLight.position.z = camera.position.z - 500;
+      coreGlow.position.copy(coreLight.position);
+      coreHalo.position.copy(coreLight.position);
+
+      // Random events.
+      if (elapsed >= nextEventAt) {
+        const roll = Math.random();
+        if (roll < 0.5) spawnShootingStar();
+        else if (roll < 0.8) spawnSupernova();
+        else {
+          // Cluster of 5 asteroids — find slow asteroids and respawn
+          // them as a tight group.
+          for (let i = 0; i < 5 && i < asteroids.length; i++) {
+            const a = asteroids[i]!;
+            a.mesh.position.set(
+              (Math.random() - 0.5) * 6,
+              (Math.random() - 0.5) * 6,
+              camera.position.z - 50,
+            );
+            a.velocity.z = 8 + Math.random() * 4;
+          }
+        }
+        nextEventAt = elapsed + 15 + Math.random() * 15;
+      }
+
+      // Update shooting stars.
+      for (let i = shootingStars.length - 1; i >= 0; i--) {
+        const s = shootingStars[i]!;
+        s.ttl -= dt;
+        s.head.addScaledVector(s.velocity, dt);
+        s.tail.copy(s.head).addScaledVector(s.velocity, -0.06);
+        const positions = s.geo.attributes.position;
+        if (positions) {
+          positions.array[0] = s.head.x;
+          positions.array[1] = s.head.y;
+          positions.array[2] = s.head.z;
+          positions.array[3] = s.tail.x;
+          positions.array[4] = s.tail.y;
+          positions.array[5] = s.tail.z;
+          positions.needsUpdate = true;
+        }
+        s.mat.opacity = Math.max(0, s.ttl / 1.4);
+        if (s.ttl <= 0) {
+          sceneGroup.remove(s.line);
+          s.geo.dispose();
+          s.mat.dispose();
+          shootingStars.splice(i, 1);
+        }
+      }
+
+      // Update supernova pulses.
+      for (let i = supernovas.length - 1; i >= 0; i--) {
+        const s = supernovas[i]!;
+        s.age += dt;
+        const t = s.age / s.duration;
+        if (t >= 1) {
+          sceneGroup.remove(s.sprite);
+          s.mat.dispose();
+          s.tex.dispose();
+          supernovas.splice(i, 1);
+          continue;
+        }
+        // Scale ramps from 0 → max across the duration.
+        const scale = t * s.maxScale;
+        s.sprite.scale.set(scale, scale, 1);
+        // Opacity peaks early and fades — bell shape.
+        s.mat.opacity = Math.sin(t * Math.PI) * 0.9;
+      }
+
+      composer.render();
+
+      // Auto-degrade.
+      const frameMs = performance.now() - frameStart;
+      if (frameMs > 20) {
+        slowFrames++;
+        if (slowFrames > 3 && !degradedNear) {
+          degradedNear = true;
+          // Hide far stars (least visually critical) — keep the
+          // streaks and mid layer. Three.js has no per-vertex
+          // visibility on Points without rebuilding, so just lower
+          // the material opacity by half rather than deleting verts.
+          farStarsMat.opacity *= 0.5;
+        }
+      } else {
+        slowFrames = 0;
+      }
+
       rafHandle = requestAnimationFrame(tick);
     }
     rafHandle = requestAnimationFrame(tick);
 
-    // --- Cleanup ------------------------------------------------
+    // --- Cleanup ----------------------------------------------------
     return () => {
       cancelled = true;
       cancelAnimationFrame(rafHandle);
@@ -455,15 +872,33 @@ export function SpaceScene() {
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
       renderer.domElement.removeEventListener("pointercancel", onPointerUp);
       renderer.domElement.removeEventListener("wheel", onWheel);
-      // Geometry + material disposal — Three.js doesn't track these
-      // by GC, so leaking them costs GPU memory until reload.
-      starGeo.dispose();
-      starMat.dispose();
+      renderer.domElement.removeEventListener("dblclick", onDoubleClick);
+
+      // Dispose every geometry, material, texture. Three.js doesn't
+      // GC GPU-side resources; missing this leaks memory until reload.
+      farStarsGeo.dispose();
+      farStarsMat.dispose();
+      midStarsGeo.dispose();
+      midStarsMat.dispose();
+      nearStarsGeo.dispose();
+      nearStarsMat.dispose();
+      starTexture.dispose();
+      coreGlowTex.dispose();
+      coreGlowMat.dispose();
+      coreHaloMat.dispose();
+      for (const t of nebulaTextures) t.dispose();
+      for (const m of nebulaMaterials) m.dispose();
       for (const g of asteroidGeometries) g.dispose();
       for (const m of asteroidMaterials) m.dispose();
-      for (const g of planetGeometries) g.dispose();
-      for (const m of planetMaterials) m.dispose();
-      for (const m of glowMaterials) m.dispose();
+      for (const s of shootingStars) {
+        s.geo.dispose();
+        s.mat.dispose();
+      }
+      for (const s of supernovas) {
+        s.mat.dispose();
+        s.tex.dispose();
+      }
+      composer.dispose();
       renderer.dispose();
       try {
         container.removeChild(renderer.domElement);
