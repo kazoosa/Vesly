@@ -378,6 +378,12 @@ export function ConnectButton() {
         // poll is immediate (see fix #4 in pollUntilTransactionsArrive).
         qc.invalidateQueries({ queryKey: ["accounts"] });
         qc.invalidateQueries({ queryKey: ["holdings"] });
+        // Summary drives the overlay's "Your portfolio so far" preview
+        // (PortfolioPreview in PostConnectSyncOverlay.tsx). Without this
+        // invalidate the preview would render with whatever cached
+        // summary the dashboard had pre-connect, which for a brand-new
+        // account is nothing.
+        qc.invalidateQueries({ queryKey: ["summary"] });
         if (firstConnect) {
           setOverlaySteps((prev) => ({
             ...prev,

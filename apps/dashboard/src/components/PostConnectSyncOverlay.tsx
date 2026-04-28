@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "../lib/auth";
+import { apiFetch } from "../lib/api";
+import { fmtUsd } from "./money";
 
 /**
  * Premium full-screen sync overlay shown after a brokerage connection
@@ -322,6 +326,13 @@ export function PostConnectSyncOverlay({
             ))}
           </ol>
 
+          {/* Live portfolio preview — only while waiting on the broker.
+              Accounts and holdings have already been written to the DB
+              by the foreground sync; showing them here turns "2 minutes
+              of waiting" into "2 minutes of seeing your real data."
+              The broker-side wait for transactions stays untouched. */}
+          {waitingForBroker && <PortfolioPreview />}
+
           {/* ETA / long-sync message */}
           <div className="mt-5 pt-4 border-t border-border-subtle space-y-3">
             {waitingForBroker ? (
@@ -373,6 +384,114 @@ export function PostConnectSyncOverlay({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Live portfolio preview shown inside the overlay while we're waiting
+ * on the broker-side transaction cache. Accounts + holdings were
+ * already written by the foreground sync, so we have real data to
+ * display before transactions land — the user sees their portfolio
+ * value and top holdings instead of staring at a pulsing bar.
+ *
+ * Pulls from the same /api/portfolio/summary + /api/portfolio/holdings
+ * endpoints the Overview page uses; React Query caches this for the
+ * Overview page, so the user lands on a warm cache when the overlay
+ * dismisses.
+ */
+interface PortfolioSummary {
+  total_value: number;
+  connected_count: number;
+  holdings_count: number;
+}
+interface PortfolioHolding {
+  ticker_symbol: string;
+  name: string;
+  market_value: number;
+  weight_pct: number;
+}
+function PortfolioPreview() {
+  const { accessToken } = useAuth();
+  const f = apiFetch(() => accessToken);
+  // refetchInterval: hit the endpoints periodically while the
+  // overlay is up. The numbers stabilise after the foreground sync
+  // (which happened before this component mounted), but a small
+  // refresh covers the case where the user kicks off a Refresh-now
+  // from elsewhere or where post-sync option-quote refreshes change
+  // values mid-wait.
+  const summary = useQuery({
+    queryKey: ["summary"],
+    queryFn: () => f<PortfolioSummary>("/api/portfolio/summary"),
+    refetchInterval: 15_000,
+    enabled: Boolean(accessToken),
+  });
+  const holdings = useQuery({
+    queryKey: ["holdings"],
+    queryFn: () => f<{ holdings: PortfolioHolding[] }>("/api/portfolio/holdings"),
+    refetchInterval: 30_000,
+    enabled: Boolean(accessToken),
+  });
+
+  const top = (holdings.data?.holdings ?? [])
+    .filter((h) => h.market_value > 0)
+    .sort((a, b) => b.market_value - a.market_value)
+    .slice(0, 3);
+
+  // Loading state: while the very first /summary call is in flight,
+  // show a small skeleton row instead of empty space — keeps the
+  // card height stable as data arrives.
+  if (!summary.data) {
+    return (
+      <div className="mt-5 pt-4 border-t border-border-subtle">
+        <div className="text-[10px] uppercase tracking-widest text-fg-muted mb-2">
+          Your portfolio so far
+        </div>
+        <div className="h-7 rounded animate-pulse bg-bg-inset" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-5 pt-4 border-t border-border-subtle">
+      <div className="text-[10px] uppercase tracking-widest text-fg-muted mb-2">
+        Your portfolio so far
+      </div>
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <div className="font-num text-2xl font-semibold text-fg-primary tabular-nums">
+          {fmtUsd(summary.data.total_value)}
+        </div>
+        <div className="text-[11px] text-fg-muted text-right leading-tight">
+          {summary.data.connected_count} account
+          {summary.data.connected_count === 1 ? "" : "s"}
+          <br />
+          {summary.data.holdings_count} holding
+          {summary.data.holdings_count === 1 ? "" : "s"}
+        </div>
+      </div>
+      {top.length > 0 && (
+        <ul className="space-y-1">
+          {top.map((h) => (
+            <li
+              key={h.ticker_symbol}
+              className="flex items-center gap-2 text-[12px]"
+            >
+              <span className="font-num font-medium text-fg-primary w-14">
+                {h.ticker_symbol}
+              </span>
+              <span className="flex-1 truncate text-fg-secondary">
+                {h.name}
+              </span>
+              <span className="font-num text-fg-secondary tabular-nums">
+                {fmtUsd(h.market_value, { decimals: 0 })}
+              </span>
+              <span className="font-num text-fg-muted tabular-nums w-12 text-right">
+                {h.weight_pct.toFixed(1)}%
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

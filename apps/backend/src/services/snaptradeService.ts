@@ -1242,7 +1242,13 @@ export async function pollActivities(developer: Developer): Promise<{
   // without another query. Net: 1 round-trip per row instead of 2.
   // We keep the explicit create (not upsert) here specifically because
   // pollActivities has to count NEW rows, not upserted ones.
-  const POOL = 10;
+  //
+  // Pool size 25 (vs 10 in syncDeveloper): Neon's pgbouncer happily
+  // serves this many concurrent statements, and the poll path's
+  // creates are independent (different snaptradeOrderId for each row)
+  // so there's no contention to worry about. Production logs showed
+  // ~11.5s with POOL=10 for ~900 rows; 25 should land at 3-4s.
+  const POOL = 25;
   let cursor = 0;
   async function worker() {
     while (cursor < resolved.length) {
