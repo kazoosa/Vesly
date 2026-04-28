@@ -727,7 +727,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
     startDate.setFullYear(today.getFullYear() - years);
     const startStr = startDate.toISOString().slice(0, 10);
     const endStr = today.toISOString().slice(0, 10);
-    const actStartedAt = Date.now();
+    const fetchStartedAt = Date.now();
     logger.info(
       {
         developerId: developer.id,
@@ -750,6 +750,12 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
           endDate: endStr,
         }),
     );
+    // Time the SnapTrade call separately from the DB writes so the
+    // log line below tells us which side dominated this sync. The
+    // request-level latencyMs in middleware/requestLogger.ts conflates
+    // network + DB + the count query at the end, which made it
+    // impossible to tell from logs whether SnapTrade or Neon was slow.
+    const snaptradeMs = Date.now() - fetchStartedAt;
 
     if (!actCallRes.ok) {
       errors.push({
@@ -761,17 +767,6 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       const allActivities =
         (actCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
       rawActivitiesFetched = allActivities.length;
-      logger.info(
-        {
-          developerId: developer.id,
-          userId,
-          totalReturned: allActivities.length,
-          elapsedMs: Date.now() - actStartedAt,
-          startDate: startStr,
-          endDate: endStr,
-        },
-        "snaptrade activities fetched",
-      );
 
       // Pre-classify each activity row, dropping unknowns and
       // resolving its destination account. We do this in a
@@ -862,6 +857,7 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       // securities. Calling upsertSecurity per row was 1+ DB round
       // trips per row; do it once per distinct security and cache
       // the resulting Security.id by ticker.
+      const dbStartedAt = Date.now();
       type SecKey = string;
       const securityByTicker = new Map<SecKey, { id: string }>();
       const distinct = new Map<SecKey, Resolved>();
@@ -937,6 +933,22 @@ export async function syncDeveloper(developer: Developer): Promise<SyncResult> {
       }
       await Promise.all(
         Array.from({ length: Math.min(POOL, resolved.length) }, () => worker()),
+      );
+      const dbMs = Date.now() - dbStartedAt;
+
+      logger.info(
+        {
+          developerId: developer.id,
+          userId,
+          totalReturned: allActivities.length,
+          txWritten: txCount,
+          distinctSecurities: distinct.size,
+          snaptradeMs,
+          dbMs,
+          startDate: startStr,
+          endDate: endStr,
+        },
+        "snaptrade activities fetched",
       );
     }
   }
@@ -1070,6 +1082,12 @@ export async function pollActivities(developer: Developer): Promise<{
   const startStr = startDate.toISOString().slice(0, 10);
   const endStr = today.toISOString().slice(0, 10);
 
+  // Time the SnapTrade fetch and the DB writes separately so the log
+  // line tells us which side dominates a given poll. Earlier we only
+  // had the request-level latencyMs, which conflated network + DB
+  // and made it impossible to tell from logs whether the broker or
+  // Neon was slow.
+  const fetchStartedAt = Date.now();
   const actCallRes = await safeCall(
     "transactionsAndReporting.getActivities",
     { developerId: developer.id, userSecret, startDate, endDate: today, source: "poller" },
@@ -1081,6 +1099,7 @@ export async function pollActivities(developer: Developer): Promise<{
         endDate: endStr,
       }),
   );
+  const snaptradeMs = Date.now() - fetchStartedAt;
 
   if (!actCallRes.ok) {
     return { transactionsAdded: 0, totalReturned: 0, fullySucceeded: false };
@@ -1089,17 +1108,18 @@ export async function pollActivities(developer: Developer): Promise<{
   const allActivities =
     (actCallRes.data.data as unknown as Array<Record<string, unknown>>) ?? [];
   totalReturned = allActivities.length;
-  logger.info(
-    {
-      developerId: developer.id,
-      totalReturned,
-      itemCount: items.length,
-      source: "poller",
-    },
-    "snaptrade activities poll fetched",
-  );
 
   if (totalReturned === 0) {
+    logger.info(
+      {
+        developerId: developer.id,
+        totalReturned: 0,
+        snaptradeMs,
+        itemCount: items.length,
+        source: "poller",
+      },
+      "snaptrade activities poll fetched",
+    );
     return { transactionsAdded: 0, totalReturned: 0, fullySucceeded: true };
   }
 
@@ -1113,6 +1133,30 @@ export async function pollActivities(developer: Developer): Promise<{
     }
   }
 
+  // --- Pre-classify activities in a synchronous pass ---
+  //
+  // Same shape as syncDeveloper's hoisted activities path: walk the
+  // rows once, drop unknowns, resolve destination account, and stash
+  // everything needed for the writes. This gives us the full set of
+  // distinct securities up front so we can batch the upsertSecurity
+  // calls instead of one per row, and lets the per-row write loop
+  // be a tight bounded-concurrency pool.
+  type Resolved = {
+    accountId: string;
+    ticker: string;
+    description: string;
+    mapped: string;
+    actOption: OptionSpec | undefined;
+    price: number;
+    units: number;
+    amount: number;
+    fees: number;
+    date: Date;
+    orderId: string;
+    currency: string;
+    rawId: string;
+  };
+  const resolved: Resolved[] = [];
   for (const act of allActivities) {
     const acctRef = act.account as { id?: string } | string | undefined;
     const stAccId = typeof acctRef === "string" ? acctRef : acctRef?.id;
@@ -1120,63 +1164,142 @@ export async function pollActivities(developer: Developer): Promise<{
     const localAcc = accountByStId.get(stAccId);
     if (!localAcc) continue; // activity for an account we don't know — skip
 
-    try {
-      const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
-      const mapped = mapActivityType(rawType);
-      if (!mapped) continue;
+    const rawType = String(act.type ?? act.action ?? "").toUpperCase().trim();
+    const mapped = mapActivityType(rawType);
+    if (!mapped) continue;
 
-      const { ticker, description } = extractSnapTradeSymbol(act);
-      const price = safeNumber(act.price);
-      const units = safeNumber(act.units);
-      const amount = Math.abs(safeNumber(act.amount, price * units));
-      const fees = Math.abs(safeNumber(act.fee));
-      const date =
-        parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
-      const tradeDateKey = date.toISOString().slice(0, 10);
+    const { ticker, description } = extractSnapTradeSymbol(act);
+    const price = safeNumber(act.price);
+    const units = safeNumber(act.units);
+    const amount = Math.abs(safeNumber(act.amount, price * units));
+    const fees = Math.abs(safeNumber(act.fee));
+    const date =
+      parseIsoDate(act.trade_date) ?? parseIsoDate(act.settlement_date) ?? new Date();
+    const tradeDateKey = date.toISOString().slice(0, 10);
+    const actOption: OptionSpec | undefined =
+      parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
+    const rawId = String(act.id ?? "").trim();
+    const orderId =
+      rawId ||
+      `snaptrade_${stAccId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
 
-      const actOption =
-        parseOptionSymbol(act.symbol) ?? parseOptionSymbol(ticker) ?? undefined;
-      const security = await upsertSecurity(ticker, description, price, undefined, actOption);
+    resolved.push({
+      accountId: localAcc.id,
+      ticker,
+      description,
+      mapped,
+      actOption,
+      price,
+      units,
+      amount,
+      fees,
+      date,
+      orderId,
+      currency: extractCurrency(act.currency) ?? "USD",
+      rawId,
+    });
+  }
 
-      const rawId = String(act.id ?? "").trim();
-      const orderId =
-        rawId ||
-        `snaptrade_${stAccId}_${tradeDateKey}_${mapped}_${ticker}_${amount.toFixed(2)}`;
+  // --- Batch upsertSecurity for distinct tickers ---
+  const dbStartedAt = Date.now();
+  const securityByTicker = new Map<string, { id: string }>();
+  const distinct = new Map<string, Resolved>();
+  for (const r of resolved) {
+    if (!distinct.has(r.ticker)) distinct.set(r.ticker, r);
+  }
+  const securityResults = await Promise.all(
+    [...distinct.values()].map(async (r) => {
+      try {
+        const sec = await upsertSecurity(
+          r.ticker,
+          r.description,
+          r.price,
+          undefined,
+          r.actOption ?? undefined,
+        );
+        return { ticker: r.ticker, sec };
+      } catch (err) {
+        logger.warn(
+          { err, ticker: r.ticker, source: "poller" },
+          "snaptrade poll: upsertSecurity failed; activity rows for this ticker will be skipped",
+        );
+        fullySucceeded = false;
+        return null;
+      }
+    }),
+  );
+  for (const sr of securityResults) {
+    if (sr) securityByTicker.set(sr.ticker, { id: sr.sec.id });
+  }
 
-      // upsert is idempotent via snaptradeOrderId — re-poll won't
-      // create duplicates. We count the transaction only on insert,
-      // not update, so the "transactions added this poll" number is
-      // accurate.
-      const existing = await prisma.investmentTransaction.findUnique({
-        where: { snaptradeOrderId: orderId },
-        select: { id: true },
-      });
-      if (existing) continue;
-
-      await prisma.investmentTransaction.create({
-        data: {
-          accountId: localAcc.id,
-          securityId: security.id,
-          snaptradeOrderId: orderId,
-          date,
-          name: String(act.description ?? description ?? `${mapped} ${ticker}`),
-          type: mapped,
-          quantity: Math.abs(units),
-          price,
-          amount,
-          fees,
-          isoCurrencyCode: extractCurrency(act.currency) ?? "USD",
-        },
-      });
-      transactionsAdded++;
-    } catch (err) {
-      logger.warn(
-        { err, source: "poller", actId: String(act.id ?? "") },
-        "snaptrade poll: failed to upsert activity row; continuing",
-      );
-      fullySucceeded = false;
+  // --- Bounded-concurrency InvestmentTransaction.create with P2002
+  // dedup ---
+  //
+  // create() + catch P2002 is faster than upsert() because the DB
+  // doesn't have to do an existence-check round-trip on the unique
+  // index — Postgres just returns the constraint violation if the
+  // row already exists, and we treat that as "already counted, skip"
+  // without another query. Net: 1 round-trip per row instead of 2.
+  // We keep the explicit create (not upsert) here specifically because
+  // pollActivities has to count NEW rows, not upserted ones.
+  const POOL = 10;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < resolved.length) {
+      const i = cursor++;
+      const r = resolved[i]!;
+      const security = securityByTicker.get(r.ticker);
+      if (!security) continue;
+      try {
+        await prisma.investmentTransaction.create({
+          data: {
+            accountId: r.accountId,
+            securityId: security.id,
+            snaptradeOrderId: r.orderId,
+            date: r.date,
+            name: String(r.description ?? `${r.mapped} ${r.ticker}`),
+            type: r.mapped,
+            quantity: Math.abs(r.units),
+            price: r.price,
+            amount: r.amount,
+            fees: r.fees,
+            isoCurrencyCode: r.currency,
+          },
+        });
+        transactionsAdded++;
+      } catch (err) {
+        // P2002 = unique constraint on snaptradeOrderId — row already
+        // exists from a prior sync/poll, idempotent skip. Anything
+        // else is a real failure worth logging and counting against
+        // fullySucceeded.
+        const code = (err as { code?: string }).code;
+        if (code === "P2002") continue;
+        logger.warn(
+          { err, source: "poller", actId: r.rawId },
+          "snaptrade poll: failed to insert activity row; continuing",
+        );
+        fullySucceeded = false;
+      }
     }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(POOL, resolved.length) }, () => worker()),
+  );
+  const dbMs = Date.now() - dbStartedAt;
+
+  logger.info(
+    {
+      developerId: developer.id,
+      totalReturned,
+      transactionsAdded,
+      distinctSecurities: distinct.size,
+      itemCount: items.length,
+      snaptradeMs,
+      dbMs,
+      source: "poller",
+    },
+    "snaptrade activities poll fetched",
+  );
 
   return { transactionsAdded, totalReturned, fullySucceeded };
 }

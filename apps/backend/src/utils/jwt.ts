@@ -30,7 +30,13 @@ export function signDeveloperAccess(sub: string, email: string): string {
   return jwt.sign(
     { sub, email, type: "access", jti: nanoid() } satisfies Omit<DeveloperJwtClaims, "jti"> & { jti: string },
     config.JWT_SECRET,
-    { expiresIn: "15m" } as SignOptions,
+    // 60m: long enough that a SnapTrade connect-and-wait flow (which
+    // can sit on the broker-side cache for 2+ minutes on Robinhood)
+    // never crosses the boundary mid-poll. Earlier 15m caused every
+    // poll-activities call after minute 15 to hit 401 → /refresh →
+    // retry, adding a round-trip per poll cycle. The refresh path
+    // still works as a safety net; this just makes it rare.
+    { expiresIn: "60m" } as SignOptions,
   );
 }
 
