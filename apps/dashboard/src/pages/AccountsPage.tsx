@@ -164,6 +164,29 @@ export function AccountsPage() {
       {refresh.isSuccess && refresh.data && (() => {
         const isPartial = refresh.data.fully_succeeded === false;
         const errs = refresh.data.errors ?? [];
+        // No connections = nothing to sync. The backend correctly
+        // returns 200 with connections: 0, but the generic banner
+        // ("0 accounts, 0 holdings, X on record") reads like Refresh
+        // wiped everything. Show a distinct neutral banner instead.
+        const noConnections =
+          !isPartial && (refresh.data.connections ?? 0) === 0;
+        if (noConnections) {
+          return (
+            <div
+              role="status"
+              className="rounded-md border px-3 py-2 text-xs space-y-1 border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+            >
+              <div>
+                <strong>Nothing to refresh:</strong> no brokerage is
+                connected to your account right now.
+              </div>
+              <div className="opacity-80">
+                Click <strong>+ Connect brokerage</strong> below to link one,
+                or import an activity CSV if you'd rather backfill manually.
+              </div>
+            </div>
+          );
+        }
         const tone = isPartial
           ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
           : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
@@ -432,7 +455,7 @@ function RefreshButton({
   }, [isPending]);
   return (
     <button
-      className="btn-ghost text-xs"
+      className="btn-ghost text-xs inline-flex items-center gap-1.5"
       onClick={onClick}
       disabled={isPending}
       title={
@@ -441,6 +464,7 @@ function RefreshButton({
           : undefined
       }
     >
+      {isPending && <Spinner />}
       {isPending
         ? coldStart
           ? "Waking up server…"
