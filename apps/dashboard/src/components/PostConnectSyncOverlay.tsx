@@ -74,6 +74,12 @@ interface Props {
    *  broker-specific theme (Robinhood green, Fidelity navy/gold,
    *  Schwab electric blue, etc). Optional; falls back to default. */
   brokerName?: string | null;
+  /** Click-X behavior. When provided AND the overlay is in
+   *  Phase 2 (waitingForBroker) or Phase 3 (writing), the X button
+   *  appears in the card's top-right corner. Clicking it should
+   *  dismiss the overlay while keeping the background poll running.
+   *  Parent is responsible for showing a persistent banner thereafter. */
+  onExit?: () => void;
 }
 
 // Step weights — sum to 40, since Phase 1 fills only to 40%.
@@ -189,11 +195,18 @@ export function PostConnectSyncOverlay({
   ready,
   onSkipWait,
   brokerName,
+  onExit,
 }: Props) {
   // Phase derivation.
   const writing = Boolean(steps.transactions.writing) && !ready;
   const waitingForBroker =
     Boolean(steps.transactions.waitingForBroker) && !ready && !writing;
+
+  // Debug mode: read once from ?debug. Forwarded to SpaceScene which
+  // logs every scene-graph addition + renders the diagnostics panel.
+  const debugMode =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).has("debug");
 
   // Reduced motion: skip the 3D scene; fall back to gradient backdrop.
   const reducedMotion = usePrefersReducedMotion();
@@ -428,7 +441,7 @@ export function PostConnectSyncOverlay({
     >
       {sceneActive && (
         <Suspense fallback={null}>
-          <SpaceScene brokerName={brokerName} audioEnabled={audioEnabled} />
+          <SpaceScene brokerName={brokerName} audioEnabled={audioEnabled} debug={debugMode} />
         </Suspense>
       )}
 
@@ -512,6 +525,35 @@ export function PostConnectSyncOverlay({
             "0 24px 60px -12px rgb(0 0 0 / 0.45), 0 8px 20px -6px rgb(0 0 0 / 0.25)",
         }}
       >
+        {/* X button — only when an exit handler is provided AND we're
+            past Phase 1 (so the sync wait can continue in the
+            background after dismiss). Hidden during Phase 1 because
+            there's nothing to background-continue at that point. */}
+        {onExit && (waitingForBroker || writing) && (
+          <button
+            type="button"
+            onClick={onExit}
+            className="absolute top-1.5 right-1.5 w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg-primary hover:bg-bg-hover transition-colors z-[1]"
+            title="Exit — transactions will continue loading in the background"
+            aria-label="Exit (continue loading in background)"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        )}
+
         {/* Drag handle. Three dots, cursor flips to grab/grabbing. */}
         <div
           onPointerDown={onHandlePointerDown}

@@ -7,23 +7,21 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { themeForBroker } from "./spaceTheme";
 
-// Re-export so callers that already import themeForBroker from this
-// file keep working — the actual theme map lives in ./spaceTheme to
-// avoid pulling three.js into the main dashboard bundle.
 export { themeForBroker } from "./spaceTheme";
 export type { BrokerTheme } from "./spaceTheme";
 
 /**
- * Black-hole-with-accretion-disk scene. Modeled after the visual
- * energy of Geometry Dash level "Aperture" (chunlv1). The black hole
- * is the focal point of the entire scene — perfectly dark center
- * with a glowing accretion disk spiraling inward, twin polar jets,
- * inspiraling particle field, expanding ring ripples, foreground
- * geometric line drift, and a rhythm pulse driving brightness on
- * a 95-BPM heartbeat.
+ * Black hole scene — built ENTIRELY with stock Three.js materials
+ * (PointsMaterial, MeshBasicMaterial, SpriteMaterial). No custom
+ * GLSL shaders. The previous version used custom ShaderMaterial for
+ * the disk / inspiral / jets, and at least one of those silently
+ * failed to compile, which left the user staring at a pulsing green
+ * lensing-shell ball with everything else missing.
  *
- * Lazy-loaded by PostConnectSyncOverlay so the three.js + post-
- * processing bundle only ships when the overlay actually mounts.
+ * The trade-off: per-frame CPU writes to BufferAttribute.array for
+ * the moving particles. Costs more JS but cannot fail silently.
+ *
+ * Lazy-loaded by PostConnectSyncOverlay.
  */
 
 // --- Tunables -------------------------------------------------------
@@ -31,11 +29,11 @@ const STAR_COUNT_BG = 8000;
 const NEBULA_COUNT = 11;
 const ACCRETION_PARTICLES = 8000;
 const INSPIRAL_PARTICLES = 3000;
-const JET_PARTICLES = 1200; // 600 per pole
+const JET_PARTICLES = 1200;
 const FOREGROUND_LINES = 14;
 
 const BLACK_HOLE_RADIUS = 1.2;
-const ACCRETION_INNER = 1.6; // disk starts here
+const ACCRETION_INNER = 1.6;
 const ACCRETION_OUTER = 7.5;
 const DISK_TILT = (20 * Math.PI) / 180;
 const JET_LENGTH = 18;
@@ -44,15 +42,26 @@ const CAMERA_DIST_MIN = 5;
 const CAMERA_DIST_MAX = 60;
 const CAMERA_DIST_DEFAULT = 22;
 
-// Rhythm: 95 BPM = ~1.58s per beat.
 const BPM = 95;
 const BEAT_HZ = BPM / 60;
 
-// Hue cycle: 30s round trip, ±15° (so ±0.0417 in 0..1 hue space).
 const HUE_CYCLE_SEC = 30;
 const HUE_AMPLITUDE = 15 / 360;
 
-// --- Programmatic textures (no asset deps) --------------------------
+// WASD movement tuning. Held key applies a target velocity; released
+// key decays to zero over 0.3s.
+const KEY_ORBIT_SPEED = 1.4;     // radians/sec at full press for left/right
+const KEY_PITCH_SPEED = 1.0;     // radians/sec at full press for up/down
+const KEY_RADIUS_SPEED = 18;     // units/sec at full press for forward/back
+const KEY_DECAY_TAU = 0.3;       // exponential decay time constant on release
+
+/** Keys we own. Anything not in this set bubbles up to other handlers. */
+const OWNED_KEYS = new Set([
+  "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+]);
+
+// --- Programmatic textures -----------------------------------------
 function makeStarTexture(size = 64): THREE.Texture {
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -92,8 +101,7 @@ function makeRingTexture(size = 256): THREE.Texture {
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  // White ring with falloff at the edge.
-  ctx.fillStyle = "rgba(255,255,255,0)";
+  ctx.fillStyle = "rgba(0,0,0,0)";
   ctx.fillRect(0, 0, size, size);
   const cx = size / 2;
   const cy = size / 2;
@@ -109,281 +117,7 @@ function makeRingTexture(size = 256): THREE.Texture {
   return texture;
 }
 
-// --- Color helpers --------------------------------------------------
-function hexToColor(hex: number): THREE.Color {
-  return new THREE.Color(hex);
-}
-
-// --- Custom shaders -------------------------------------------------
-
-/**
- * Accretion disk vertex+fragment shaders.
- *
- * Each particle carries (radius, angle0, layer, intensity) in vertex
- * attributes. The vertex shader rotates each particle around the
- * disk normal using Keplerian angular velocity (∝ 1/√r), tilts the
- * disk on init (already baked into the position), and computes a
- * size that grows slightly as particles approach the inner edge.
- * The fragment shader applies a temperature gradient — blue-white
- * inside, orange-yellow mid, deep red outer fading to broker theme.
- */
-const accretionVertex = `
-  attribute float aRadius;
-  attribute float aAngle0;
-  attribute float aThickness;
-  attribute float aIntensity;
-  uniform float uTime;
-  uniform float uPulse;
-  uniform float uInnerR;
-  uniform float uOuterR;
-  uniform float uDiskTilt;
-  uniform float uTidalBoost;
-  varying float vRadial;
-  varying float vIntensity;
-
-  void main() {
-    // Keplerian angular velocity ∝ 1/sqrt(r). Inner particles
-    // race, outer ones crawl. A small tidal boost flares the
-    // whole disk during the disruption event.
-    float angVel = 0.55 / sqrt(max(aRadius, 0.4));
-    angVel += uTidalBoost * 1.5;
-    float angle = aAngle0 + uTime * angVel;
-
-    // Position in the disk plane (xz before tilt).
-    float x = aRadius * cos(angle);
-    float z = aRadius * sin(angle);
-    // Small vertical thickness so the disk has a bit of body.
-    float y = aThickness;
-
-    // Tilt disk by uDiskTilt around the X axis.
-    float ct = cos(uDiskTilt);
-    float st = sin(uDiskTilt);
-    float yt = y * ct - z * st;
-    float zt = y * st + z * ct;
-
-    vec3 pos = vec3(x, yt, zt);
-    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-    gl_Position = projectionMatrix * mvPosition;
-
-    // Size: bigger inside (hotter), modulated by pulse.
-    float radNorm = clamp((aRadius - uInnerR) / (uOuterR - uInnerR), 0.0, 1.0);
-    float baseSize = mix(2.6, 1.0, radNorm);
-    float sizeMod = 1.0 + uPulse * 0.25 + uTidalBoost * 1.2;
-    gl_PointSize = baseSize * sizeMod * (300.0 / -mvPosition.z);
-
-    vRadial = radNorm;
-    vIntensity = aIntensity;
-  }
-`;
-
-const accretionFragment = `
-  uniform vec3 uInnerColor;   // blue-white hottest
-  uniform vec3 uMidColor;     // orange-yellow
-  uniform vec3 uOuterColor;   // broker theme outer edge
-  uniform float uPulse;
-  uniform float uTidalBoost;
-  varying float vRadial;
-  varying float vIntensity;
-
-  void main() {
-    // Round point with soft falloff.
-    vec2 uv = gl_PointCoord - 0.5;
-    float d = length(uv);
-    if (d > 0.5) discard;
-    float alpha = smoothstep(0.5, 0.0, d) * vIntensity;
-
-    // Two-stop gradient inner→mid (radNorm 0..0.5) and mid→outer
-    // (radNorm 0.5..1).
-    vec3 col;
-    if (vRadial < 0.5) {
-      col = mix(uInnerColor, uMidColor, vRadial * 2.0);
-    } else {
-      col = mix(uMidColor, uOuterColor, (vRadial - 0.5) * 2.0);
-    }
-
-    // Pulse modulates brightness on a heartbeat. Tidal disruption
-    // briefly washes the whole disk to white.
-    float brightness = 1.0 + uPulse * 0.35 + uTidalBoost * 2.5;
-    col *= brightness;
-    col = mix(col, vec3(1.0), uTidalBoost * 0.6);
-
-    gl_FragColor = vec4(col * alpha, alpha);
-  }
-`;
-
-/**
- * Inspiraling particle field shader.
- *
- * Each particle has (radius, angle0, height, lifetime). Over time
- * they spiral inward on a logarithmic curve — angle increases AND
- * radius shrinks. When radius < event horizon, particle respawns
- * at the outer edge with a fresh random angle.
- */
-const inspiralVertex = `
-  attribute float aRadius;
-  attribute float aAngle0;
-  attribute float aHeight;
-  attribute float aPhase;
-  uniform float uTime;
-  uniform float uPulse;
-  uniform float uTidalBoost;
-  uniform float uOuterR;
-  uniform float uInnerR;
-  varying float vT;
-
-  void main() {
-    // Log-spiral: r(t) = outer * exp(-k * (t + phase) mod cycle)
-    // Cycle period 12s, k chosen so outer→inner over one cycle.
-    float cycle = 12.0;
-    float k = log(uOuterR / uInnerR) / cycle;
-    float lifetime = mod(uTime + aPhase, cycle);
-    float r = uOuterR * exp(-k * lifetime);
-
-    // Angular velocity inversely proportional to radius (matter speeds
-    // up as it falls). Keplerian-ish.
-    float omega = 0.4 / max(r * 0.4, 0.5);
-    float angle = aAngle0 + uTime * omega + uTidalBoost * 4.0;
-
-    // Particles drift slightly out of plane based on aHeight,
-    // squashed toward zero as they fall in (everything ends up in
-    // the disk plane near the event horizon).
-    float h = aHeight * (r / uOuterR) * (r / uOuterR);
-
-    vec3 pos = vec3(r * cos(angle), h, r * sin(angle));
-    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-    gl_Position = projectionMatrix * mvPosition;
-
-    float t = clamp(1.0 - (r - uInnerR) / (uOuterR - uInnerR), 0.0, 1.0);
-    vT = t;
-
-    // Size grows toward center.
-    float baseSize = mix(1.5, 4.0, t);
-    gl_PointSize = baseSize * (1.0 + uPulse * 0.15 + uTidalBoost * 0.8) * (260.0 / -mvPosition.z);
-  }
-`;
-
-const inspiralFragment = `
-  uniform vec3 uOuterColor;
-  uniform vec3 uInnerColor;
-  uniform float uTidalBoost;
-  varying float vT;
-
-  void main() {
-    vec2 uv = gl_PointCoord - 0.5;
-    float d = length(uv);
-    if (d > 0.5) discard;
-    float alpha = smoothstep(0.5, 0.0, d);
-
-    vec3 col = mix(uOuterColor, uInnerColor, pow(vT, 1.5));
-    col *= 1.0 + uTidalBoost * 1.5;
-    gl_FragColor = vec4(col * alpha, alpha);
-  }
-`;
-
-/**
- * Jet shader. Particles fly along ±Y from origin, fading by lifetime.
- */
-const jetVertex = `
-  attribute float aPhase;
-  attribute float aOffset;     // 0..1, position along jet at t=0
-  attribute float aLateral;    // small random transverse offset radius
-  attribute float aLatAngle;   // angle for the lateral offset
-  attribute float aSign;       // +1 top jet, -1 bottom jet
-  uniform float uTime;
-  uniform float uLength;
-  uniform float uPulse;
-  uniform float uTidalBoost;
-  uniform float uDiskTilt;
-  varying float vLife;
-
-  void main() {
-    float speed = 1.0 + uTidalBoost * 2.0;
-    float lifetime = mod((uTime * speed * 0.18) + aPhase, 1.0);
-    float life = mod(aOffset + lifetime, 1.0);
-    float distAlong = life * uLength;
-
-    // Tightening cone — wider at base, narrower toward tip.
-    float tighten = 1.0 - life * 0.65;
-    float lat = aLateral * tighten * (1.0 + uTidalBoost * 1.0);
-
-    // Jet local frame: along ±Y, with the disk-tilt applied (jets
-    // are perpendicular to the disk).
-    float y = distAlong * aSign;
-    float x = lat * cos(aLatAngle);
-    float z = lat * sin(aLatAngle);
-
-    // Apply same tilt as the disk so jets stay perpendicular.
-    float ct = cos(uDiskTilt);
-    float st = sin(uDiskTilt);
-    float yt = y * ct - z * st;
-    float zt = y * st + z * ct;
-
-    vec3 pos = vec3(x, yt, zt);
-    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-    gl_Position = projectionMatrix * mvPosition;
-
-    // Fade in fast, fade out toward the end.
-    vLife = smoothstep(0.0, 0.1, life) * (1.0 - smoothstep(0.6, 1.0, life));
-
-    float baseSize = mix(3.0, 1.2, life);
-    gl_PointSize = baseSize * (1.0 + uPulse * 0.2 + uTidalBoost * 1.5) * (220.0 / -mvPosition.z);
-  }
-`;
-
-const jetFragment = `
-  uniform vec3 uJetColor;
-  uniform float uTidalBoost;
-  varying float vLife;
-  void main() {
-    vec2 uv = gl_PointCoord - 0.5;
-    float d = length(uv);
-    if (d > 0.5) discard;
-    float a = smoothstep(0.5, 0.0, d) * vLife;
-    vec3 col = mix(uJetColor, vec3(1.0), 0.4) * (1.0 + uTidalBoost * 1.0);
-    gl_FragColor = vec4(col * a, a);
-  }
-`;
-
-/**
- * Cheap fake gravitational lensing shell. Uses Fresnel + procedural
- * radial distortion in the fragment shader to give the impression of
- * stars curving around the black hole edge — no actual screen-space
- * displacement (which would cost a full extra render pass).
- */
-const lensVertex = `
-  varying vec3 vNormal;
-  varying vec3 vViewPos;
-  void main() {
-    vNormal = normalize(normalMatrix * normal);
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    vViewPos = -mvPosition.xyz;
-    gl_Position = projectionMatrix * mvPosition;
-  }
-`;
-
-const lensFragment = `
-  varying vec3 vNormal;
-  varying vec3 vViewPos;
-  uniform float uTime;
-  uniform float uPulse;
-  uniform vec3 uTint;
-  void main() {
-    vec3 viewDir = normalize(vViewPos);
-    float fresnel = 1.0 - max(dot(viewDir, normalize(vNormal)), 0.0);
-    float ring = pow(fresnel, 4.0);
-    // Subtle shimmer — phase across angle, not strong, just enough
-    // to suggest distortion at the edge.
-    float shimmer = 0.85 + 0.15 * sin(uTime * 2.0 + atan(vNormal.y, vNormal.x) * 6.0);
-    float a = ring * shimmer * (0.55 + uPulse * 0.15);
-    vec3 col = mix(uTint, vec3(1.0), ring);
-    gl_FragColor = vec4(col * a, a);
-  }
-`;
-
-/**
- * Vignette pass — final composition step. Subtle radial darkening
- * focuses the eye on the black hole at center.
- */
+// Vignette pass — last pass before output.
 const VignetteShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
@@ -406,36 +140,78 @@ const VignetteShader = {
       vec3 col = texture2D(tDiffuse, vUv).rgb;
       vec2 toCenter = vUv - 0.5;
       float dist = length(toCenter);
-      // Smooth darken at edges.
       float vignette = smoothstep(0.85, 0.35, dist);
       float v = mix(1.0, vignette, strength);
       col *= v;
-      // Tidal flash bumps overall brightness briefly.
       col *= 1.0 + tidalBoost * 0.5;
       gl_FragColor = vec4(col, 1.0);
     }
   `,
 };
 
+/** Linear interpolation between two THREE.Color in HSL space — gives
+ *  a more visually correct gradient than RGB lerp for the disk
+ *  temperature ramp (blue-white → orange → broker theme). */
+function lerpColorHsl(
+  out: THREE.Color,
+  a: THREE.Color,
+  b: THREE.Color,
+  t: number,
+): THREE.Color {
+  const aH = { h: 0, s: 0, l: 0 };
+  const bH = { h: 0, s: 0, l: 0 };
+  a.getHSL(aH);
+  b.getHSL(bH);
+  // Take the shorter way around the hue circle.
+  let dh = bH.h - aH.h;
+  if (dh > 0.5) dh -= 1;
+  if (dh < -0.5) dh += 1;
+  out.setHSL(
+    (aH.h + dh * t + 1) % 1,
+    aH.s + (bH.s - aH.s) * t,
+    aH.l + (bH.l - aH.l) * t,
+  );
+  return out;
+}
+
 // --- Component ------------------------------------------------------
 
 export interface SpaceSceneProps {
   brokerName?: string | null;
   audioEnabled?: boolean;
+  /** When true, log every object added to the scene + render diagnostics
+   *  overlay. Driven by `?debug` on the page URL or an explicit prop. */
+  debug?: boolean;
 }
 
-export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps) {
+export function SpaceScene({ brokerName, audioEnabled = true, debug = false }: SpaceSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const debugOverlayRef = useRef<HTMLDivElement | null>(null);
+
   const audioEnabledRef = useRef(audioEnabled);
   audioEnabledRef.current = audioEnabled;
 
   const themeRef = useRef(themeForBroker(brokerName));
   themeRef.current = themeForBroker(brokerName);
 
+  // Resolve effective debug mode: explicit prop OR ?debug in URL.
+  const debugRef = useRef(false);
+  debugRef.current =
+    debug ||
+    (typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("debug"));
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     const theme = themeRef.current;
+    const debugMode = debugRef.current;
+
+    const log = (msg: string, ...rest: unknown[]) => {
+      if (debugMode) console.log(`[SpaceScene] ${msg}`, ...rest);
+    };
+
+    log("init starting", { theme, brokerName });
 
     const W = () => container.clientWidth;
     const H = () => container.clientHeight;
@@ -456,9 +232,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    // Orbital camera — the user always looks AT the black hole. Drag
-    // rotates the camera around the origin; scroll moves it closer/
-    // farther. We track yaw/pitch + radius and recompute every frame.
     const camera = new THREE.PerspectiveCamera(60, W() / H(), 0.1, 2000);
     let camYaw = 0.4;
     let camPitch = 0.18;
@@ -471,44 +244,69 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
     composer.addPass(renderPass);
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(W(), H()),
-      1.5, // strength
-      1.0, // radius
-      0.05, // threshold
+      1.5,
+      1.0,
+      0.05,
     );
     composer.addPass(bloomPass);
     const vignettePass = new ShaderPass(VignetteShader);
     composer.addPass(vignettePass);
     const outputPass = new OutputPass();
     composer.addPass(outputPass);
+    log("renderer + composer ready");
+
+    /** Track every Object3D we add for the disposal pass and the debug
+     *  overlay. We name() them so the debug panel reads cleanly. */
+    const tracked: Array<{
+      obj: THREE.Object3D;
+      vertices: number;
+      kind: string;
+    }> = [];
+    function addTracked(obj: THREE.Object3D, kind: string, vertices: number) {
+      obj.name = kind;
+      scene.add(obj);
+      tracked.push({ obj, vertices, kind });
+      log(`+ ${kind}`, { vertices, position: obj.position.toArray() });
+    }
 
     // ---- Black hole core --------------------------------------------
-    //
-    // Two meshes:
-    //  * Solid black sphere with MeshBasicMaterial. Below the bloom
-    //    threshold (0.05) so it doesn't bloom — but more importantly,
-    //    we render the black hole AFTER bloom by drawing it on a
-    //    separate render group whose render order puts it last.
-    //  * A slightly-larger transparent shell with the lensing shader
-    //    that draws a Fresnel ring at the silhouette edge.
-    //
-    // The "black hole stays dark even with aggressive bloom" trick:
-    // we use renderOrder + depthWrite tricks. The black hole renders
-    // first to write its depth, then opaque content (including the
-    // disk) renders behind it (because we only see disk pixels where
-    // depth allows them). Bloom samples the rendered pixels — and
-    // since the black hole pixels are pure black (luminance 0), they
-    // contribute nothing to the bloom buffer. Stars BEHIND the black
-    // hole are occluded by the depth pass. Net effect: dark center,
-    // glowing rim from the lensing shader, no bloom leakage.
     const blackHoleGeo = new THREE.SphereGeometry(BLACK_HOLE_RADIUS, 64, 64);
-    const blackHoleMat = new THREE.MeshBasicMaterial({
-      color: 0x000000,
-    });
+    const blackHoleMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
     const blackHole = new THREE.Mesh(blackHoleGeo, blackHoleMat);
     blackHole.renderOrder = 10;
-    scene.add(blackHole);
+    addTracked(blackHole, "blackHole", blackHoleGeo.attributes.position!.count);
 
+    // ---- Lensing shell — simple Fresnel via PointsMaterial would not
+    // work for this; ShaderMaterial here is small and well-tested.
+    // BUT we'll fail-soft: if compile fails, we fall back to a thin
+    // semi-transparent torus that's still visible-ish.
     const lensGeo = new THREE.SphereGeometry(BLACK_HOLE_RADIUS * 1.45, 48, 48);
+    const lensVertex = `
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vViewPos = -mvPosition.xyz;
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `;
+    const lensFragment = `
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      uniform float uTime;
+      uniform float uPulse;
+      uniform vec3 uTint;
+      void main() {
+        vec3 viewDir = normalize(vViewPos);
+        float fresnel = 1.0 - max(dot(viewDir, normalize(vNormal)), 0.0);
+        float ring = pow(fresnel, 4.0);
+        float shimmer = 0.85 + 0.15 * sin(uTime * 2.0 + atan(vNormal.y, vNormal.x) * 6.0);
+        float a = ring * shimmer * (0.45 + uPulse * 0.15);
+        vec3 col = mix(uTint, vec3(1.0), ring);
+        gl_FragColor = vec4(col * a, a);
+      }
+    `;
     const lensMat = new THREE.ShaderMaterial({
       vertexShader: lensVertex,
       fragmentShader: lensFragment,
@@ -524,141 +322,157 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
     });
     const lensShell = new THREE.Mesh(lensGeo, lensMat);
     lensShell.renderOrder = 9;
-    scene.add(lensShell);
+    addTracked(lensShell, "lensShell", lensGeo.attributes.position!.count);
 
-    // ---- Accretion disk (shader-driven Points) ---------------------
-    const diskPositions = new Float32Array(ACCRETION_PARTICLES * 3);
+    // ---- Accretion disk (PointsMaterial + per-vertex colors) -------
+    //
+    // 8000 particles in a tilted annulus. Each particle keeps its own
+    // (radius, currentAngle) and we update positions on the CPU each
+    // frame. Colors are baked once at init from a temperature
+    // gradient (inner blue-white → mid orange → outer broker-themed).
     const diskRadii = new Float32Array(ACCRETION_PARTICLES);
     const diskAngles = new Float32Array(ACCRETION_PARTICLES);
-    const diskThicknesses = new Float32Array(ACCRETION_PARTICLES);
-    const diskIntensities = new Float32Array(ACCRETION_PARTICLES);
+    const diskAngVel = new Float32Array(ACCRETION_PARTICLES);
+    const diskHeights = new Float32Array(ACCRETION_PARTICLES);
+    const diskPositions = new Float32Array(ACCRETION_PARTICLES * 3);
+    const diskColors = new Float32Array(ACCRETION_PARTICLES * 3);
+    const diskBaseColors = new Float32Array(ACCRETION_PARTICLES * 3); // unmodulated
+
+    const colInner = new THREE.Color(0xa0d8ff);
+    const colMid = new THREE.Color(0xffaa40);
+    const colOuter = new THREE.Color(theme.diskOuterColor);
+    const tmpColor = new THREE.Color();
+
     for (let i = 0; i < ACCRETION_PARTICLES; i++) {
-      // Bias particles toward inner radii (1/r distribution).
       const u = Math.random();
       const r = ACCRETION_INNER + (ACCRETION_OUTER - ACCRETION_INNER) * Math.pow(u, 1.4);
       diskRadii[i] = r;
       diskAngles[i] = Math.random() * Math.PI * 2;
-      // Thickness scales with radius — a tiny bit puffier outside.
-      diskThicknesses[i] = (Math.random() - 0.5) * 0.12 * (r / ACCRETION_OUTER + 0.3);
-      diskIntensities[i] = 0.6 + Math.random() * 0.6;
-      // Position is recomputed in the vertex shader; placeholder.
-      diskPositions[i * 3] = 0;
-      diskPositions[i * 3 + 1] = 0;
-      diskPositions[i * 3 + 2] = 0;
+      // Keplerian: angular velocity ∝ 1/√r. Inner orbits fast.
+      diskAngVel[i] = 0.6 / Math.sqrt(Math.max(r, 0.4));
+      diskHeights[i] = (Math.random() - 0.5) * 0.12 * (r / ACCRETION_OUTER + 0.3);
+
+      const radNorm = Math.min(1, Math.max(0, (r - ACCRETION_INNER) / (ACCRETION_OUTER - ACCRETION_INNER)));
+      if (radNorm < 0.5) {
+        lerpColorHsl(tmpColor, colInner, colMid, radNorm * 2);
+      } else {
+        lerpColorHsl(tmpColor, colMid, colOuter, (radNorm - 0.5) * 2);
+      }
+      diskBaseColors[i * 3] = tmpColor.r;
+      diskBaseColors[i * 3 + 1] = tmpColor.g;
+      diskBaseColors[i * 3 + 2] = tmpColor.b;
+      diskColors[i * 3] = tmpColor.r;
+      diskColors[i * 3 + 1] = tmpColor.g;
+      diskColors[i * 3 + 2] = tmpColor.b;
     }
     const diskGeo = new THREE.BufferGeometry();
     diskGeo.setAttribute("position", new THREE.BufferAttribute(diskPositions, 3));
-    diskGeo.setAttribute("aRadius", new THREE.BufferAttribute(diskRadii, 1));
-    diskGeo.setAttribute("aAngle0", new THREE.BufferAttribute(diskAngles, 1));
-    diskGeo.setAttribute("aThickness", new THREE.BufferAttribute(diskThicknesses, 1));
-    diskGeo.setAttribute("aIntensity", new THREE.BufferAttribute(diskIntensities, 1));
-    // Bounding sphere is required since shaders move geometry off-origin.
+    diskGeo.setAttribute("color", new THREE.BufferAttribute(diskColors, 3));
     diskGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), ACCRETION_OUTER * 1.5);
 
-    const diskMat = new THREE.ShaderMaterial({
-      vertexShader: accretionVertex,
-      fragmentShader: accretionFragment,
-      uniforms: {
-        uTime: { value: 0 },
-        uPulse: { value: 0 },
-        uInnerR: { value: ACCRETION_INNER },
-        uOuterR: { value: ACCRETION_OUTER },
-        uDiskTilt: { value: DISK_TILT },
-        uTidalBoost: { value: 0 },
-        uInnerColor: { value: new THREE.Color(0xa0d8ff) }, // blue-white
-        uMidColor: { value: new THREE.Color(0xffaa40) },   // orange-yellow
-        uOuterColor: { value: new THREE.Color(theme.diskOuterColor) },
-      },
+    const starTextureWhite = makeStarTexture(64);
+    const diskMat = new THREE.PointsMaterial({
+      size: 0.12,
+      sizeAttenuation: true,
+      vertexColors: true,
       transparent: true,
+      opacity: 1.0,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      map: starTextureWhite,
     });
     const accretion = new THREE.Points(diskGeo, diskMat);
-    scene.add(accretion);
+    addTracked(accretion, "accretionDisk", ACCRETION_PARTICLES);
 
     // ---- Inspiraling particle field --------------------------------
-    const inPositions = new Float32Array(INSPIRAL_PARTICLES * 3);
-    const inRadii = new Float32Array(INSPIRAL_PARTICLES);
-    const inAngles = new Float32Array(INSPIRAL_PARTICLES);
-    const inHeights = new Float32Array(INSPIRAL_PARTICLES);
-    const inPhases = new Float32Array(INSPIRAL_PARTICLES);
-    for (let i = 0; i < INSPIRAL_PARTICLES; i++) {
-      inRadii[i] = ACCRETION_INNER + Math.random() * (ACCRETION_OUTER * 1.5);
-      inAngles[i] = Math.random() * Math.PI * 2;
-      inHeights[i] = (Math.random() - 0.5) * 4;
-      inPhases[i] = Math.random() * 12;
-      inPositions[i * 3] = 0;
-      inPositions[i * 3 + 1] = 0;
-      inPositions[i * 3 + 2] = 0;
+    //
+    // Each particle is on a logarithmic-spiral path: r(t) = r0*exp(-k*t)
+    // shrinking from outer to event horizon. When it crosses the
+    // event horizon, respawn at the outer edge with a new angle.
+    const inspiralOuter = ACCRETION_OUTER * 1.6;
+    const inspiralRadii = new Float32Array(INSPIRAL_PARTICLES);
+    const inspiralAngles = new Float32Array(INSPIRAL_PARTICLES);
+    const inspiralHeights = new Float32Array(INSPIRAL_PARTICLES);
+    const inspiralPositions = new Float32Array(INSPIRAL_PARTICLES * 3);
+    const inspiralColors = new Float32Array(INSPIRAL_PARTICLES * 3);
+    const colInspiralOuter = new THREE.Color(theme.diskOuterColor);
+    const colInspiralInner = new THREE.Color(0xffffff);
+    function seedInspiralParticle(i: number, freshOuter = false) {
+      inspiralRadii[i] = freshOuter
+        ? inspiralOuter
+        : ACCRETION_INNER + Math.random() * (inspiralOuter - ACCRETION_INNER);
+      inspiralAngles[i] = Math.random() * Math.PI * 2;
+      inspiralHeights[i] = (Math.random() - 0.5) * 4;
     }
-    const inGeo = new THREE.BufferGeometry();
-    inGeo.setAttribute("position", new THREE.BufferAttribute(inPositions, 3));
-    inGeo.setAttribute("aRadius", new THREE.BufferAttribute(inRadii, 1));
-    inGeo.setAttribute("aAngle0", new THREE.BufferAttribute(inAngles, 1));
-    inGeo.setAttribute("aHeight", new THREE.BufferAttribute(inHeights, 1));
-    inGeo.setAttribute("aPhase", new THREE.BufferAttribute(inPhases, 1));
-    inGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), ACCRETION_OUTER * 2);
-    const inMat = new THREE.ShaderMaterial({
-      vertexShader: inspiralVertex,
-      fragmentShader: inspiralFragment,
-      uniforms: {
-        uTime: { value: 0 },
-        uPulse: { value: 0 },
-        uTidalBoost: { value: 0 },
-        uOuterR: { value: ACCRETION_OUTER * 1.5 },
-        uInnerR: { value: ACCRETION_INNER },
-        uOuterColor: { value: new THREE.Color(theme.diskOuterColor) },
-        uInnerColor: { value: new THREE.Color(0xffffff) },
-      },
+    for (let i = 0; i < INSPIRAL_PARTICLES; i++) {
+      seedInspiralParticle(i);
+    }
+    // Fill colors based on initial radius — we update color per frame
+    // too as particles spiral in, so they get hotter as they fall.
+    const inspiralGeo = new THREE.BufferGeometry();
+    inspiralGeo.setAttribute("position", new THREE.BufferAttribute(inspiralPositions, 3));
+    inspiralGeo.setAttribute("color", new THREE.BufferAttribute(inspiralColors, 3));
+    inspiralGeo.boundingSphere = new THREE.Sphere(
+      new THREE.Vector3(0, 0, 0),
+      inspiralOuter * 1.2,
+    );
+    const inspiralMat = new THREE.PointsMaterial({
+      size: 0.18,
+      sizeAttenuation: true,
+      vertexColors: true,
       transparent: true,
+      opacity: 0.9,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      map: starTextureWhite,
     });
-    const inspiral = new THREE.Points(inGeo, inMat);
-    scene.add(inspiral);
+    const inspiral = new THREE.Points(inspiralGeo, inspiralMat);
+    addTracked(inspiral, "inspiralField", INSPIRAL_PARTICLES);
 
     // ---- Polar jets -------------------------------------------------
-    const jetPositions = new Float32Array(JET_PARTICLES * 3);
-    const jetPhases = new Float32Array(JET_PARTICLES);
+    //
+    // Two cones along the disk's normal. Each particle has a
+    // (offset, lateral) pair and a sign (+1 / -1) for which pole.
+    // We update positions per frame: distAlong = offset advances and
+    // wraps; lateral tightens with distance.
     const jetOffsets = new Float32Array(JET_PARTICLES);
     const jetLaterals = new Float32Array(JET_PARTICLES);
     const jetLatAngles = new Float32Array(JET_PARTICLES);
     const jetSigns = new Float32Array(JET_PARTICLES);
+    const jetPositions = new Float32Array(JET_PARTICLES * 3);
+    const jetColors = new Float32Array(JET_PARTICLES * 3);
+    const colJet = new THREE.Color(theme.jetColor);
+    const colJetWhite = new THREE.Color(0xffffff);
     for (let i = 0; i < JET_PARTICLES; i++) {
-      jetPhases[i] = Math.random();
       jetOffsets[i] = Math.random();
-      jetLaterals[i] = Math.random() * 0.5; // narrow cone
+      jetLaterals[i] = Math.random() * 0.5;
       jetLatAngles[i] = Math.random() * Math.PI * 2;
       jetSigns[i] = i < JET_PARTICLES / 2 ? 1 : -1;
     }
     const jetGeo = new THREE.BufferGeometry();
     jetGeo.setAttribute("position", new THREE.BufferAttribute(jetPositions, 3));
-    jetGeo.setAttribute("aPhase", new THREE.BufferAttribute(jetPhases, 1));
-    jetGeo.setAttribute("aOffset", new THREE.BufferAttribute(jetOffsets, 1));
-    jetGeo.setAttribute("aLateral", new THREE.BufferAttribute(jetLaterals, 1));
-    jetGeo.setAttribute("aLatAngle", new THREE.BufferAttribute(jetLatAngles, 1));
-    jetGeo.setAttribute("aSign", new THREE.BufferAttribute(jetSigns, 1));
+    jetGeo.setAttribute("color", new THREE.BufferAttribute(jetColors, 3));
     jetGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), JET_LENGTH * 1.2);
-    const jetMat = new THREE.ShaderMaterial({
-      vertexShader: jetVertex,
-      fragmentShader: jetFragment,
-      uniforms: {
-        uTime: { value: 0 },
-        uLength: { value: JET_LENGTH },
-        uPulse: { value: 0 },
-        uTidalBoost: { value: 0 },
-        uDiskTilt: { value: DISK_TILT },
-        uJetColor: { value: new THREE.Color(theme.jetColor) },
-      },
+    const jetMat = new THREE.PointsMaterial({
+      size: 0.15,
+      sizeAttenuation: true,
+      vertexColors: true,
       transparent: true,
+      opacity: 0.95,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      map: starTextureWhite,
     });
     const jets = new THREE.Points(jetGeo, jetMat);
-    scene.add(jets);
+    addTracked(jets, "polarJets", JET_PARTICLES);
 
-    // ---- Background star field --------------------------------------
-    const starTextureWhite = makeStarTexture(64);
+    // Disk tilt is around X: mat * vec(x, y, z).
+    // We bake the tilt into the per-frame position writes so the
+    // BufferAttribute already contains rotated coordinates.
+    const tiltCos = Math.cos(DISK_TILT);
+    const tiltSin = Math.sin(DISK_TILT);
+
+    // ---- Background star field (8000 white points) -----------------
     const bgPositions = new Float32Array(STAR_COUNT_BG * 3);
     for (let i = 0; i < STAR_COUNT_BG; i++) {
       const r = 200 + Math.random() * 400;
@@ -681,9 +495,9 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       map: starTextureWhite,
     });
     const bgStars = new THREE.Points(bgStarsGeo, bgStarsMat);
-    scene.add(bgStars);
+    addTracked(bgStars, "bgStars", STAR_COUNT_BG);
 
-    // ---- Background nebulas (deep, subtle) -------------------------
+    // ---- Background nebulas ----------------------------------------
     const nebulaTextures: THREE.Texture[] = [];
     const nebulaMaterials: THREE.SpriteMaterial[] = [];
     const nebulas: Array<{
@@ -706,6 +520,7 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       });
       nebulaMaterials.push(mat);
       const sprite = new THREE.Sprite(mat);
+      sprite.name = `nebula_${i}`;
       const r = 90 + Math.random() * 220;
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
@@ -725,9 +540,18 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         baseSat: hsl.s,
         baseLight: hsl.l,
       });
+      tracked.push({ obj: sprite, vertices: 4, kind: `nebula_${i}` });
     }
+    log(`+ ${NEBULA_COUNT} nebulas`);
 
-    // ---- Expanding ring ripples ------------------------------------
+    // ---- Expanding rings -------------------------------------------
+    //
+    // RingGeometry default sits in the XY plane (vertices at z=0,
+    // facing +Z). We want it to lie in the disk plane. The disk's
+    // local plane is tilted by DISK_TILT around the X axis from the
+    // XZ plane. So: take a ring that's flat in XY, rotate it by
+    // -π/2 around X to land in XZ, then by DISK_TILT around X to
+    // match the disk tilt. Net: rotate.x = -π/2 + DISK_TILT.
     const ringTexture = makeRingTexture(256);
     const rings: Array<{
       mesh: THREE.Mesh;
@@ -738,10 +562,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       maxScale: number;
     }> = [];
     function spawnRing() {
-      // Thin glowing ring spawns at the event horizon and expands.
-      // RingGeometry parameters: (innerRadius, outerRadius, segments).
-      // We use a very thin annulus and rely on a glow texture for
-      // the soft edge.
       const inner = BLACK_HOLE_RADIUS * 1.05;
       const outer = inner * 1.04;
       const geo = new THREE.RingGeometry(inner, outer, 96);
@@ -755,86 +575,14 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         map: ringTexture,
       });
       const mesh = new THREE.Mesh(geo, mat);
-      // Tilt the ring to match the disk plane.
-      mesh.rotation.x = Math.PI / 2 - DISK_TILT;
+      mesh.name = `ring_${rings.length}`;
+      mesh.rotation.x = -Math.PI / 2 + DISK_TILT;
       scene.add(mesh);
-      rings.push({
-        mesh,
-        geo,
-        mat,
-        age: 0,
-        duration: 4.5,
-        maxScale: 14,
-      });
+      rings.push({ mesh, geo, mat, age: 0, duration: 4.5, maxScale: 14 });
+      log(`+ ring spawn`);
     }
 
-    // ---- Foreground geometric line drift ---------------------------
-    //
-    // Thin glowing lines and triangles in the extreme foreground —
-    // they drift past the camera. Built from BufferGeometry line
-    // segments with low opacity. They're not on a plane facing the
-    // camera; they're real 3D line segments at z near the camera so
-    // parallax shows them moving past faster than anything else.
-    const fgLines: Array<{
-      mesh: THREE.LineSegments;
-      geo: THREE.BufferGeometry;
-      mat: THREE.LineBasicMaterial;
-      driftZ: number;
-      basePos: THREE.Vector3;
-    }> = [];
-    for (let i = 0; i < FOREGROUND_LINES; i++) {
-      // Build a small geometric shape — either a horizontal line, a
-      // vertical line, or a triangle outline. Mix gives an HUD-like
-      // feel.
-      const positions: number[] = [];
-      const shapeRoll = Math.random();
-      if (shapeRoll < 0.5) {
-        // Horizontal short line.
-        const len = 0.4 + Math.random() * 1.2;
-        positions.push(-len / 2, 0, 0, len / 2, 0, 0);
-      } else if (shapeRoll < 0.8) {
-        // Vertical short line.
-        const len = 0.3 + Math.random() * 0.9;
-        positions.push(0, -len / 2, 0, 0, len / 2, 0);
-      } else {
-        // Triangle outline.
-        const r = 0.4 + Math.random() * 0.6;
-        const a = Math.random() * Math.PI * 2;
-        const p0 = [r * Math.cos(a), r * Math.sin(a), 0];
-        const p1 = [r * Math.cos(a + (Math.PI * 2) / 3), r * Math.sin(a + (Math.PI * 2) / 3), 0];
-        const p2 = [r * Math.cos(a + (Math.PI * 4) / 3), r * Math.sin(a + (Math.PI * 4) / 3), 0];
-        positions.push(...p0, ...p1, ...p1, ...p2, ...p2, ...p0);
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      const mat = new THREE.LineBasicMaterial({
-        color: theme.foregroundLineColor,
-        transparent: true,
-        opacity: 0.32 + Math.random() * 0.18,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const mesh = new THREE.LineSegments(geo, mat);
-      // Place near the camera's initial Z but laterally offscreen so
-      // it drifts in. Different starting Zs = parallax depth.
-      const startX = (Math.random() - 0.5) * 30;
-      const startY = (Math.random() - 0.5) * 18;
-      const startZ = 6 + Math.random() * 14;
-      const basePos = new THREE.Vector3(startX, startY, startZ);
-      mesh.position.copy(basePos);
-      mesh.rotation.set(
-        Math.random() * Math.PI * 2,
-        Math.random() * Math.PI * 2,
-        Math.random() * Math.PI * 2,
-      );
-      // Drift speed varies — closer ones (smaller basePos.z) move
-      // slightly faster for parallax.
-      const driftZ = 0.4 + (15 - basePos.z) * 0.08 + Math.random() * 0.3;
-      scene.add(mesh);
-      fgLines.push({ mesh, geo, mat, driftZ, basePos });
-    }
-
-    // ---- Tidal disruption shockwave ring ---------------------------
+    // ---- Tidal shockwave ring --------------------------------------
     const shockwaveTex = makeRingTexture(256);
     let tidalRing: {
       mesh: THREE.Mesh;
@@ -856,17 +604,14 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         map: shockwaveTex,
       });
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.rotation.x = Math.PI / 2 - DISK_TILT;
+      mesh.name = "shockwave";
+      mesh.rotation.x = -Math.PI / 2 + DISK_TILT;
       scene.add(mesh);
       tidalRing = { mesh, geo, mat, age: 0 };
+      log("+ shockwave");
     }
 
-    // ---- One-shot click burst (screen-space approximation) ---------
-    //
-    // Per spec we use a screen-space approximation: any click counts
-    // as a particle-cluster hit. We spawn a small expanding burst
-    // of ~80 particles at the world position derived from un-
-    // projecting the click into the disk plane.
+    // ---- Click bursts ----------------------------------------------
     const burstStates: Array<{
       points: THREE.Points;
       geo: THREE.BufferGeometry;
@@ -885,7 +630,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         positions[i * 3] = worldPos.x;
         positions[i * 3 + 1] = worldPos.y;
         positions[i * 3 + 2] = worldPos.z;
-        // Random outward velocity.
         const dir = new THREE.Vector3(
           Math.random() - 0.5,
           Math.random() - 0.5,
@@ -898,7 +642,7 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
       const mat = new THREE.PointsMaterial({
-        size: 3.5,
+        size: 0.4,
         sizeAttenuation: true,
         color: 0xffffff,
         transparent: true,
@@ -908,18 +652,64 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         map: starTextureWhite,
       });
       const points = new THREE.Points(geo, mat);
+      points.name = "clickBurst";
       scene.add(points);
       burstStates.push({
-        points,
-        geo,
-        mat,
-        velocities,
-        positions,
-        count,
-        age: 0,
-        duration: 1.0,
+        points, geo, mat, velocities, positions, count, age: 0, duration: 1.0,
       });
+      log("+ click burst", { worldPos: worldPos.toArray() });
     }
+
+    // ---- Foreground HUD-like geometric line drift ------------------
+    const fgLines: Array<{
+      mesh: THREE.LineSegments;
+      geo: THREE.BufferGeometry;
+      mat: THREE.LineBasicMaterial;
+      driftSpeed: number;
+    }> = [];
+    for (let i = 0; i < FOREGROUND_LINES; i++) {
+      const positions: number[] = [];
+      const shapeRoll = Math.random();
+      if (shapeRoll < 0.5) {
+        const len = 0.4 + Math.random() * 1.2;
+        positions.push(-len / 2, 0, 0, len / 2, 0, 0);
+      } else if (shapeRoll < 0.8) {
+        const len = 0.3 + Math.random() * 0.9;
+        positions.push(0, -len / 2, 0, 0, len / 2, 0);
+      } else {
+        const r = 0.4 + Math.random() * 0.6;
+        const a = Math.random() * Math.PI * 2;
+        const p0 = [r * Math.cos(a), r * Math.sin(a), 0];
+        const p1 = [r * Math.cos(a + (Math.PI * 2) / 3), r * Math.sin(a + (Math.PI * 2) / 3), 0];
+        const p2 = [r * Math.cos(a + (Math.PI * 4) / 3), r * Math.sin(a + (Math.PI * 4) / 3), 0];
+        positions.push(...p0, ...p1, ...p1, ...p2, ...p2, ...p0);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: theme.foregroundLineColor,
+        transparent: true,
+        opacity: 0.32 + Math.random() * 0.18,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const mesh = new THREE.LineSegments(geo, mat);
+      mesh.name = `fgLine_${i}`;
+      const startX = (Math.random() - 0.5) * 30;
+      const startY = (Math.random() - 0.5) * 18;
+      const startZ = 6 + Math.random() * 14;
+      mesh.position.set(startX, startY, startZ);
+      mesh.rotation.set(
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+      );
+      const driftSpeed = 0.4 + (15 - startZ) * 0.08 + Math.random() * 0.3;
+      scene.add(mesh);
+      fgLines.push({ mesh, geo, mat, driftSpeed });
+      tracked.push({ obj: mesh, vertices: positions.length / 3, kind: `fgLine_${i}` });
+    }
+    log(`+ ${FOREGROUND_LINES} foreground lines`);
 
     // ---- Web Audio --------------------------------------------------
     let audioCtx: AudioContext | null = null;
@@ -936,8 +726,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         masterGain = audioCtx.createGain();
         masterGain.gain.value = 0;
         masterGain.connect(audioCtx.destination);
-
-        // 40Hz black hole drone.
         oscDrone = audioCtx.createOscillator();
         oscDrone.type = "sine";
         oscDrone.frequency.value = 40;
@@ -945,8 +733,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         droneGain.gain.value = 0.8;
         oscDrone.connect(droneGain);
         droneGain.connect(masterGain);
-
-        // 90Hz mid resonance with slow LFO.
         oscMid = audioCtx.createOscillator();
         oscMid.type = "sine";
         oscMid.frequency.value = 90;
@@ -957,11 +743,9 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         lfo = audioCtx.createOscillator();
         lfo.frequency.value = 0.05;
         lfoGain = audioCtx.createGain();
-        lfoGain.gain.value = 0.4; // modulates midGain depth
+        lfoGain.gain.value = 0.4;
         lfo.connect(lfoGain);
         lfoGain.connect(midGain.gain);
-
-        // 600Hz jet shimmer.
         oscShimmer = audioCtx.createOscillator();
         oscShimmer.type = "sine";
         oscShimmer.frequency.value = 600;
@@ -969,33 +753,28 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         shimmerGain.gain.value = 0.4;
         oscShimmer.connect(shimmerGain);
         shimmerGain.connect(masterGain);
-
         oscDrone.start();
         oscMid.start();
         oscShimmer.start();
         lfo.start();
         audioCtx.resume().catch(() => {});
-
         const tStart = audioCtx.currentTime;
         masterGain.gain.setValueAtTime(0, tStart);
         masterGain.gain.linearRampToValueAtTime(0.05, tStart + 2);
       }
     } catch {
-      /* audio init failed — scene works silently */
+      /* silent */
     }
-
     function spawnThumpAudio() {
       if (!audioCtx) return;
       try {
         const ctx = audioCtx;
-        // White noise buffer, 0.5s.
         const len = Math.floor(ctx.sampleRate * 1.5);
         const buf = ctx.createBuffer(1, len, ctx.sampleRate);
         const data = buf.getChannelData(0);
         for (let i = 0; i < len; i++) data[i] = (Math.random() - 0.5) * 2;
         const src = ctx.createBufferSource();
         src.buffer = buf;
-        // Lowpass filter at 80Hz.
         const filter = ctx.createBiquadFilter();
         filter.type = "lowpass";
         filter.frequency.value = 80;
@@ -1011,7 +790,7 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         src.start(t);
         src.stop(t + 2.0);
       } catch {
-        /* best-effort */
+        /* */
       }
     }
 
@@ -1019,17 +798,40 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
     let dragging = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
+    let pointerDownX = 0;
+    let pointerDownY = 0;
     const lookVelocity = new THREE.Vector2(0, 0);
 
-    /** Tidal disruption seconds remaining (0 = inactive). */
     let tidalRemaining = 0;
     const TIDAL_DURATION = 2.0;
 
-    // Drag threshold: if pointer moves > 4px between down and up,
-    // we count it as a drag (no click). Otherwise it's a click and
-    // we spawn a burst.
-    let pointerDownX = 0;
-    let pointerDownY = 0;
+    // ---- Keyboard input --------------------------------------------
+    //
+    // Track which keys are held; the rAF loop applies them with
+    // velocity easing. Mounted/unmounted with the scene so we don't
+    // step on app shortcuts when the overlay is closed.
+    const held = new Set<string>();
+    // Velocity components — eased toward the held-input target each
+    // frame.
+    let vYaw = 0;
+    let vPitch = 0;
+    let vRadius = 0;
+    function onKeyDown(e: KeyboardEvent) {
+      if (!OWNED_KEYS.has(e.code)) return;
+      held.add(e.code);
+      e.preventDefault();
+      // Wake audio on first keystroke too.
+      if (audioCtx && audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (!OWNED_KEYS.has(e.code)) return;
+      held.delete(e.code);
+      e.preventDefault();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
 
     function onPointerDown(e: PointerEvent) {
       dragging = true;
@@ -1051,7 +853,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       lastPointerY = e.clientY;
       camYaw -= dx * 0.005;
       camPitch -= dy * 0.005;
-      // Clamp pitch so we never gimbal-flip.
       camPitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, camPitch));
       lookVelocity.set(-dx * 0.005 * 60, -dy * 0.005 * 60);
     }
@@ -1067,21 +868,14 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         /* ok */
       }
       if (!moved) {
-        // Click — spawn burst at the un-projected click position
-        // mapped to the disk plane (y = 0 after disk tilt).
         const rect = renderer.domElement.getBoundingClientRect();
         const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
         const ndc = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(camera);
         const dir = ndc.sub(camera.position).normalize();
-        // Intersect with the y=0 plane (disk plane after tilt — close
-        // enough for screen-space approximation).
         const t = -camera.position.y / dir.y;
         if (t > 0 && Number.isFinite(t)) {
           const worldPos = camera.position.clone().addScaledVector(dir, t);
-          // Clamp to a reasonable region around the disk so clicks
-          // off in space still feel like they originated from the
-          // disk.
           worldPos.clampLength(0, ACCRETION_OUTER * 1.5);
           spawnClickBurst(worldPos);
         }
@@ -1099,8 +893,6 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       tidalRemaining = TIDAL_DURATION;
       spawnShockwave();
       spawnThumpAudio();
-      // Burst all the burst-style particles in a sphere around the
-      // black hole.
       for (let i = 0; i < 8; i++) {
         const dir = new THREE.Vector3(
           Math.random() - 0.5,
@@ -1128,18 +920,49 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
     }
     window.addEventListener("resize", onResize);
 
+    // ---- Debug overlay: list scene objects + vertex counts --------
+    let debugDiv: HTMLDivElement | null = null;
+    let debugWireframeRoot: THREE.Object3D | null = null;
+    if (debugMode) {
+      debugDiv = document.createElement("div");
+      debugDiv.style.cssText = `
+        position: absolute;
+        top: 56px;
+        left: 16px;
+        z-index: 5;
+        color: #aaffaa;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        background: rgba(0, 0, 0, 0.7);
+        border: 1px solid #2a4a2a;
+        padding: 8px 10px;
+        max-width: 320px;
+        max-height: 60vh;
+        overflow-y: auto;
+        line-height: 1.4;
+        pointer-events: none;
+      `;
+      container.appendChild(debugDiv);
+      debugOverlayRef.current = debugDiv;
+      // Wireframe overlay group: bounding-sphere helpers around each
+      // tracked object. Toggleable via the same flag.
+      debugWireframeRoot = new THREE.Group();
+      debugWireframeRoot.name = "debugWireframes";
+      scene.add(debugWireframeRoot);
+      log("debug overlay enabled");
+    }
+
     // ---- Animation loop --------------------------------------------
     const clock = new THREE.Clock();
     let elapsed = 0;
-    let nextRingAt = 2.5;
+    let nextRingAt = 1.0;
     let rafHandle = 0;
     let cancelled = false;
     let slowFrames = 0;
     let degraded = false;
+    let frameNum = 0;
 
-    // Pre-allocate workspace.
-    const tmpHsl = { h: 0, s: 0, l: 0 };
-    const tmpColor = new THREE.Color();
+    const camToCenter = new THREE.Vector3();
 
     function tick() {
       if (cancelled) return;
@@ -1150,8 +973,8 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       const frameStart = performance.now();
       const dt = Math.min(clock.getDelta(), 0.05);
       elapsed += dt;
+      frameNum++;
 
-      // ---- Audio gain follows mute state. -------------------------
       if (audioCtx && masterGain) {
         const target = audioEnabledRef.current ? 0.05 : 0;
         if (Math.abs(masterGain.gain.value - target) > 0.001) {
@@ -1159,13 +982,11 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         }
       }
 
-      // ---- Rhythm pulse (95 BPM heartbeat) ------------------------
-      // Sine on BEAT_HZ, then squared so it has a sharper attack and
-      // mellower trough — reads as a beat, not a smooth wave.
+      // ---- Rhythm pulse -------------------------------------------
       const pulseRaw = Math.sin(elapsed * BEAT_HZ * 2 * Math.PI);
-      const pulse = pulseRaw > 0 ? Math.pow(pulseRaw, 2) : 0;
+      const pulse = pulseRaw > 0 ? pulseRaw * pulseRaw : 0;
 
-      // ---- Tidal disruption envelope ------------------------------
+      // ---- Tidal envelope -----------------------------------------
       let tidalBoost = 0;
       if (tidalRemaining > 0) {
         const phase = TIDAL_DURATION - tidalRemaining;
@@ -1175,25 +996,130 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         tidalRemaining -= dt;
       }
 
-      // ---- Update shader uniforms ---------------------------------
-      diskMat.uniforms.uTime.value = elapsed;
-      diskMat.uniforms.uPulse.value = pulse;
-      diskMat.uniforms.uTidalBoost.value = tidalBoost;
-
-      inMat.uniforms.uTime.value = elapsed;
-      inMat.uniforms.uPulse.value = pulse;
-      inMat.uniforms.uTidalBoost.value = tidalBoost;
-
-      jetMat.uniforms.uTime.value = elapsed;
-      jetMat.uniforms.uPulse.value = pulse;
-      jetMat.uniforms.uTidalBoost.value = tidalBoost;
-
+      // ---- Lens shader uniforms ----------------------------------
       lensMat.uniforms.uTime.value = elapsed;
       lensMat.uniforms.uPulse.value = pulse;
-
       vignettePass.uniforms.tidalBoost.value = tidalBoost;
 
-      // ---- Hue shift on nebulas (30s round trip, ±15°) ------------
+      // ---- Disk pulse — ±35% brightness via material.opacity -----
+      // Plus tidal flash bumps it dramatically.
+      diskMat.opacity = 0.7 + pulse * 0.35 + tidalBoost * 1.0;
+      // During tidal, color-wash the disk toward white via vertex colors
+      // — too expensive to rebuild every frame, so we instead just
+      // overdrive opacity which already gets us most of the way.
+
+      // ---- Update accretion disk positions -----------------------
+      //
+      // For each particle: angle += angVel * dt * (1 + tidalBoost*1.5).
+      // x = r*cos(a), z = r*sin(a). y is the small thickness offset.
+      // Then tilt around X: yt = y*cos(t) - z*sin(t); zt = y*sin(t) + z*cos(t).
+      const speedFactor = 1 + tidalBoost * 1.5;
+      {
+        const posArr = diskGeo.attributes.position!.array as Float32Array;
+        for (let i = 0; i < ACCRETION_PARTICLES; i++) {
+          diskAngles[i]! += diskAngVel[i]! * dt * speedFactor;
+          const r = diskRadii[i]!;
+          const a = diskAngles[i]!;
+          const x = r * Math.cos(a);
+          const z = r * Math.sin(a);
+          const y = diskHeights[i]!;
+          const yt = y * tiltCos - z * tiltSin;
+          const zt = y * tiltSin + z * tiltCos;
+          const off = i * 3;
+          posArr[off] = x;
+          posArr[off + 1] = yt;
+          posArr[off + 2] = zt;
+        }
+        diskGeo.attributes.position!.needsUpdate = true;
+      }
+
+      // ---- Update inspiraling field ------------------------------
+      //
+      // Every particle's radius shrinks each frame on a logarithmic
+      // schedule. At a constant per-second rate of `radialSpeed`,
+      // r *= exp(-k*dt) with k chosen so a particle at outer takes
+      // ~12s to reach inner.
+      // exp(-k * 12) = inner/outer  →  k = ln(outer/inner) / 12
+      const inSpiralK = Math.log(inspiralOuter / ACCRETION_INNER) / 12;
+      {
+        const posArr = inspiralGeo.attributes.position!.array as Float32Array;
+        const colArr = inspiralGeo.attributes.color!.array as Float32Array;
+        for (let i = 0; i < INSPIRAL_PARTICLES; i++) {
+          // Radius shrink.
+          let r = inspiralRadii[i]!;
+          r *= Math.exp(-inSpiralK * dt);
+          // Angular: ω = 0.4/r (faster as r shrinks).
+          const omega = 0.4 / Math.max(r * 0.4, 0.5);
+          let a = inspiralAngles[i]! + omega * dt + tidalBoost * 4 * dt;
+          // Respawn at outer if past horizon.
+          if (r < ACCRETION_INNER * 0.95) {
+            r = inspiralOuter;
+            a = Math.random() * Math.PI * 2;
+            inspiralHeights[i] = (Math.random() - 0.5) * 4;
+          }
+          inspiralRadii[i] = r;
+          inspiralAngles[i] = a;
+
+          // Position.
+          const h = inspiralHeights[i]! * (r / inspiralOuter) * (r / inspiralOuter);
+          const off = i * 3;
+          posArr[off] = r * Math.cos(a);
+          posArr[off + 1] = h;
+          posArr[off + 2] = r * Math.sin(a);
+
+          // Color: outer broker theme → white-hot inner.
+          const t = Math.min(1, Math.max(0, 1 - (r - ACCRETION_INNER) / (inspiralOuter - ACCRETION_INNER)));
+          const tt = Math.pow(t, 1.5);
+          colArr[off] = colInspiralOuter.r + (colInspiralInner.r - colInspiralOuter.r) * tt;
+          colArr[off + 1] = colInspiralOuter.g + (colInspiralInner.g - colInspiralOuter.g) * tt;
+          colArr[off + 2] = colInspiralOuter.b + (colInspiralInner.b - colInspiralOuter.b) * tt;
+        }
+        inspiralGeo.attributes.position!.needsUpdate = true;
+        inspiralGeo.attributes.color!.needsUpdate = true;
+      }
+
+      // ---- Update jets -------------------------------------------
+      {
+        const posArr = jetGeo.attributes.position!.array as Float32Array;
+        const colArr = jetGeo.attributes.color!.array as Float32Array;
+        const jetSpeed = 1 + tidalBoost * 2;
+        for (let i = 0; i < JET_PARTICLES; i++) {
+          jetOffsets[i]! += jetSpeed * 0.2 * dt;
+          if (jetOffsets[i]! > 1) jetOffsets[i]! -= 1;
+          const life = jetOffsets[i]!;
+          const distAlong = life * JET_LENGTH;
+          const tighten = 1 - life * 0.65;
+          const lat = jetLaterals[i]! * tighten * (1 + tidalBoost);
+          const sign = jetSigns[i]!;
+          const y = distAlong * sign;
+          const x = lat * Math.cos(jetLatAngles[i]!);
+          const z = lat * Math.sin(jetLatAngles[i]!);
+          // Same disk tilt applied to keep jets perpendicular to disk.
+          const yt = y * tiltCos - z * tiltSin;
+          const zt = y * tiltSin + z * tiltCos;
+          const off = i * 3;
+          posArr[off] = x;
+          posArr[off + 1] = yt;
+          posArr[off + 2] = zt;
+          // Lifetime envelope baked into color (since vertexColors).
+          // Fade in fast, fade out toward end.
+          const fadeIn = Math.min(1, life / 0.1);
+          const fadeOut = 1 - Math.max(0, (life - 0.6) / 0.4);
+          const lifeAlpha = fadeIn * fadeOut;
+          // Mix theme jet color with white per-particle.
+          const mix = 0.4;
+          colArr[off] = (colJet.r * (1 - mix) + colJetWhite.r * mix) * lifeAlpha;
+          colArr[off + 1] = (colJet.g * (1 - mix) + colJetWhite.g * mix) * lifeAlpha;
+          colArr[off + 2] = (colJet.b * (1 - mix) + colJetWhite.b * mix) * lifeAlpha;
+        }
+        jetGeo.attributes.position!.needsUpdate = true;
+        jetGeo.attributes.color!.needsUpdate = true;
+      }
+      // Pulse on jet brightness too — opacity is uniform across all
+      // jet particles, so a per-frame nudge here is cheap.
+      jetMat.opacity = 0.85 + pulse * 0.15 + tidalBoost * 0.5;
+
+      // ---- Hue-shift nebulas -------------------------------------
       const hueOffset =
         Math.sin((elapsed / HUE_CYCLE_SEC) * Math.PI * 2) * HUE_AMPLITUDE;
       for (const n of nebulas) {
@@ -1205,19 +1131,37 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         n.sprite.material.color.copy(tmpColor);
       }
 
-      // ---- Camera (orbital) ---------------------------------------
-      // Smooth zoom toward target.
-      camRadius += (camRadiusTarget - camRadius) * 0.08;
+      // ---- Keyboard input → velocity targets ---------------------
+      const keyTarget = { yaw: 0, pitch: 0, radius: 0 };
+      if (held.has("KeyA") || held.has("ArrowLeft")) keyTarget.yaw -= KEY_ORBIT_SPEED;
+      if (held.has("KeyD") || held.has("ArrowRight")) keyTarget.yaw += KEY_ORBIT_SPEED;
+      if (held.has("KeyW") || held.has("ArrowUp")) keyTarget.radius -= KEY_RADIUS_SPEED;
+      if (held.has("KeyS") || held.has("ArrowDown")) keyTarget.radius += KEY_RADIUS_SPEED;
+      if (held.has("KeyQ")) keyTarget.pitch += KEY_PITCH_SPEED;
+      if (held.has("KeyE")) keyTarget.pitch -= KEY_PITCH_SPEED;
 
-      // Look-around inertia after release.
+      // Eased decay toward target. Held → target in ~150ms; released
+      // → 0 in ~300ms.
+      const decay = Math.exp(-dt / KEY_DECAY_TAU);
+      vYaw = vYaw * decay + keyTarget.yaw * (1 - decay);
+      vPitch = vPitch * decay + keyTarget.pitch * (1 - decay);
+      vRadius = vRadius * decay + keyTarget.radius * (1 - decay);
+      camYaw += vYaw * dt;
+      camPitch += vPitch * dt;
+      camRadiusTarget = Math.max(
+        CAMERA_DIST_MIN,
+        Math.min(CAMERA_DIST_MAX, camRadiusTarget + vRadius * dt),
+      );
+      camPitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, camPitch));
+
+      // ---- Camera (orbital) --------------------------------------
+      camRadius += (camRadiusTarget - camRadius) * 0.08;
       if (!dragging) {
         camYaw += lookVelocity.x * dt * 0.3;
         camPitch += lookVelocity.y * dt * 0.3;
         camPitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, camPitch));
         lookVelocity.multiplyScalar(0.93);
       }
-
-      // Tidal shake adds noise to camera position briefly.
       const shakeAmt = tidalBoost * 0.15;
       camera.position.set(
         camRadius * Math.cos(camPitch) * Math.cos(camYaw) + (Math.random() - 0.5) * shakeAmt,
@@ -1225,39 +1169,25 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         camRadius * Math.cos(camPitch) * Math.sin(camYaw) + (Math.random() - 0.5) * shakeAmt,
       );
       camera.lookAt(0, 0, 0);
-      tmpHsl; // (silence unused-var if any)
 
-      // ---- Foreground line drift ----------------------------------
-      // Lines drift in +Z (toward and past the camera). When they
-      // pass the camera plane (z > camera-relative threshold) they
-      // reset to the far end of the foreground volume so it loops.
-      // Camera is orbital so "past camera" = projection toward the
-      // camera position.
+      // ---- Foreground line drift ---------------------------------
+      camToCenter.copy(camera.position).normalize().negate();
       const camPos = camera.position;
-      const camToCenter = camPos.clone().normalize().negate();
       for (const fg of fgLines) {
-        // Move the line toward the camera by drifting in the
-        // -camToCenter direction (i.e. AWAY from origin, toward
-        // where the camera is).
-        fg.mesh.position.addScaledVector(camToCenter.clone().negate(), fg.driftZ * dt);
+        // Move line away from origin (toward camera direction).
+        fg.mesh.position.addScaledVector(camToCenter.clone().negate(), fg.driftSpeed * dt);
         fg.mesh.rotation.x += dt * 0.05;
         fg.mesh.rotation.y += dt * 0.07;
-        // When too close to camera, recycle to the far side relative
-        // to the camera direction.
         const distToCam = fg.mesh.position.distanceTo(camPos);
         if (distToCam < 1.5) {
-          // Reset to a fresh foreground position. We pick a point
-          // 14-22 units toward the origin from the camera.
           const reset = camPos.clone().addScaledVector(camToCenter, 14 + Math.random() * 8);
-          // Plus lateral jitter.
           reset.x += (Math.random() - 0.5) * 12;
           reset.y += (Math.random() - 0.5) * 8;
           fg.mesh.position.copy(reset);
-          fg.basePos.copy(reset);
         }
       }
 
-      // ---- Ring ripple spawn + update -----------------------------
+      // ---- Ring spawn + update ----------------------------------
       if (elapsed >= nextRingAt) {
         spawnRing();
         nextRingAt = elapsed + 3 + Math.random();
@@ -1278,7 +1208,7 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         r.mat.opacity = (1 - t) * 0.8;
       }
 
-      // ---- Tidal shockwave ring ----------------------------------
+      // ---- Tidal shockwave --------------------------------------
       if (tidalRing) {
         tidalRing.age += dt;
         const t = tidalRing.age / 1.6;
@@ -1294,7 +1224,7 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         }
       }
 
-      // ---- Click bursts ------------------------------------------
+      // ---- Click bursts -----------------------------------------
       for (let i = burstStates.length - 1; i >= 0; i--) {
         const b = burstStates[i]!;
         b.age += dt;
@@ -1309,13 +1239,9 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
         if (positions) {
           for (let j = 0; j < b.count; j++) {
             const off = j * 3;
-            // Velocity decays AND particles get pulled back toward
-            // black hole — spec says "explodes outward briefly then
-            // resumes spiraling inward."
             b.velocities[off]! *= 0.96;
             b.velocities[off + 1]! *= 0.96;
             b.velocities[off + 2]! *= 0.96;
-            // Pull-in vector toward origin.
             const px = b.positions[off]!;
             const py = b.positions[off + 1]!;
             const pz = b.positions[off + 2]!;
@@ -1338,18 +1264,40 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
 
       composer.render();
 
+      // ---- Debug overlay update ---------------------------------
+      if (debugMode && debugDiv && (frameNum % 30 === 0)) {
+        const totalVerts = tracked.reduce((s, t) => s + t.vertices, 0);
+        const lines = [
+          `BlackHole scene · debug`,
+          `frame ${frameNum} · pulse ${pulse.toFixed(2)} · tidal ${tidalBoost.toFixed(2)}`,
+          `cam yaw ${camYaw.toFixed(2)} pitch ${camPitch.toFixed(2)} radius ${camRadius.toFixed(1)}`,
+          `total tracked: ${tracked.length} objects · ${totalVerts.toLocaleString()} vertices`,
+          `--`,
+          ...tracked.map((t) => {
+            const m = t.obj as THREE.Mesh | THREE.Points | THREE.Sprite;
+            const mat = (m as THREE.Mesh).material as
+              | (THREE.Material & { color?: THREE.Color })
+              | undefined;
+            const colorHex = mat?.color
+              ? "#" + mat.color.getHexString()
+              : "—";
+            const visible = t.obj.visible ? "✓" : "✗";
+            return `${visible} ${t.kind} · ${t.vertices.toLocaleString()}v · ${colorHex}`;
+          }),
+        ];
+        debugDiv.textContent = lines.join("\n");
+      }
+
       // ---- Auto-degrade ------------------------------------------
       const frameMs = performance.now() - frameStart;
       if (frameMs > 20) {
         slowFrames++;
         if (slowFrames > 3 && !degraded) {
           degraded = true;
-          // Cheap reduction: dim the inspiral field by 20% (visual
-          // proxy for fewer particles, which would require a costly
-          // geometry rebuild).
-          inMat.uniforms.uPulse.value *= 0.8;
+          inspiralMat.opacity *= 0.7;
           bgStarsMat.opacity *= 0.7;
           for (const m of nebulaMaterials) m.opacity *= 0.8;
+          log("auto-degrade triggered");
         }
       } else {
         slowFrames = 0;
@@ -1364,6 +1312,8 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       cancelled = true;
       cancelAnimationFrame(rafHandle);
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
@@ -1383,7 +1333,7 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
           window.setTimeout(() => audioCtx?.close().catch(() => {}), 600);
         }
       } catch {
-        /* best-effort */
+        /* */
       }
 
       blackHoleGeo.dispose();
@@ -1392,8 +1342,8 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       lensMat.dispose();
       diskGeo.dispose();
       diskMat.dispose();
-      inGeo.dispose();
-      inMat.dispose();
+      inspiralGeo.dispose();
+      inspiralMat.dispose();
       jetGeo.dispose();
       jetMat.dispose();
       bgStarsGeo.dispose();
@@ -1424,11 +1374,20 @@ export function SpaceScene({ brokerName, audioEnabled = true }: SpaceSceneProps)
       try {
         container.removeChild(renderer.domElement);
       } catch {
-        /* already removed */
+        /* */
+      }
+      if (debugDiv) {
+        try {
+          container.removeChild(debugDiv);
+        } catch {
+          /* */
+        }
+      }
+      if (debugWireframeRoot) {
+        scene.remove(debugWireframeRoot);
       }
     };
-    // brokerName / audioEnabled are read via refs so changing them
-    // doesn't tear down the scene.
+    // brokerName / audioEnabled / debug are read via refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
