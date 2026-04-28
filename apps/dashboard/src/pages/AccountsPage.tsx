@@ -156,6 +156,17 @@ export function AccountsPage() {
           )}
           <RefreshButton
             isPending={refresh.isPending}
+            // Disable while a disconnect is mid-flight. Triggering a
+            // sync against records the backend is currently cascade-
+            // deleting can FK-fail mid-read on the half-deleted rows;
+            // we surface this honestly as "Disconnecting…" instead
+            // of a timer-based block. This is the lightweight client-
+            // side half of the fix; the durable backend fix
+            // (wrapping the disconnect cascade in a Prisma
+            // transaction so no sync can ever observe a half-state)
+            // is tracked separately.
+            disabled={disconnect.isPending}
+            disabledLabel="Disconnecting…"
             onClick={() => refresh.mutate()}
           />
         </div>
@@ -440,9 +451,17 @@ function DisconnectControl({
 function RefreshButton({
   isPending,
   onClick,
+  disabled = false,
+  disabledLabel,
 }: {
   isPending: boolean;
   onClick: () => void;
+  /** Externally-driven disable (e.g. while a disconnect mutation is
+   *  in flight). Distinct from `isPending` which means "this mutation
+   *  is running." When `disabled` is true we show `disabledLabel`
+   *  instead of the normal idle/pending labels. */
+  disabled?: boolean;
+  disabledLabel?: string;
 }) {
   const [coldStart, setColdStart] = useState(false);
   useEffect(() => {
@@ -453,23 +472,26 @@ function RefreshButton({
     const t = window.setTimeout(() => setColdStart(true), 5_000);
     return () => window.clearTimeout(t);
   }, [isPending]);
+  const isDisabled = isPending || disabled;
   return (
     <button
       className="btn-ghost text-xs inline-flex items-center gap-1.5"
       onClick={onClick}
-      disabled={isPending}
+      disabled={isDisabled}
       title={
         coldStart
           ? "Backend was idle and is starting up. First sync after a quiet period takes longer."
           : undefined
       }
     >
-      {isPending && <Spinner />}
-      {isPending
-        ? coldStart
-          ? "Waking up server…"
-          : "Refreshing…"
-        : "↻ Refresh now"}
+      {isDisabled && <Spinner />}
+      {disabled && disabledLabel
+        ? disabledLabel
+        : isPending
+          ? coldStart
+            ? "Waking up server…"
+            : "Refreshing…"
+          : "↻ Refresh now"}
     </button>
   );
 }
