@@ -15,90 +15,73 @@ export interface BrokerTheme {
   nebulaColors: [string, string, string];
   /** Star tint (numeric hex 0xRRGGBB) applied to far + mid layers. */
   starTint: number;
-  /** Galaxy core glow color. */
-  coreColor: number;
-  /** Outer halo color around the galaxy core. */
-  coreHaloColor: number;
-  /** Ambient light tint. */
-  ambientColor: number;
-  /** Key directional light tint, simulating "light from the core". */
-  keyLightColor: number;
-  /** Asteroid base surface color. */
-  asteroidColor: number;
-  /** Asteroid emissive vein color (mineral veins hint). */
-  asteroidEmissive: number;
-  /** Asteroid material specular highlight color. */
-  asteroidSpecular: number;
   /** HUD accent color used for the watermark + accents. */
   hudAccent: string;
+  /** Outer-edge color of the accretion disk. The inner disk fades
+   *  through orange-yellow to blue-white regardless of theme — the
+   *  outer edge is where the broker color lives. */
+  diskOuterColor: number;
+  /** Color of the relativistic jets shooting out the poles. */
+  jetColor: number;
+  /** Color of the expanding ring "ripples" that spawn periodically
+   *  from the event horizon. */
+  ringColor: number;
+  /** Color of the foreground HUD-like geometric line drift in the
+   *  extreme foreground (Aperture-style). */
+  foregroundLineColor: number;
 }
 
 export const THEME_DEFAULT: BrokerTheme = {
   watermark: "BEACON",
   nebulaColors: ["#9020e0", "#3060ff", "#10a0a0"],
   starTint: 0xffffff,
-  coreColor: 0xfff0c0,
-  coreHaloColor: 0x9090ff,
-  ambientColor: 0x404060,
-  keyLightColor: 0xfff0c0,
-  asteroidColor: 0x5a4a3a,
-  asteroidEmissive: 0x1a1008,
-  asteroidSpecular: 0x222222,
   hudAccent: "#aaccff",
+  diskOuterColor: 0x6020c0,
+  jetColor: 0x60a0ff,
+  ringColor: 0x9060ff,
+  foregroundLineColor: 0xc0a0ff,
 };
 
 export const BROKER_THEMES: Record<string, BrokerTheme> = {
   robinhood: {
     watermark: "ROBINHOOD",
-    nebulaColors: ["#00C805", "#3aff5a", "#004d00"],
+    nebulaColors: ["#003d00", "#005a00", "#00C805"],
     starTint: 0xfff8e8,
-    coreColor: 0xc8ff80,
-    coreHaloColor: 0x00C805,
-    ambientColor: 0x103010,
-    keyLightColor: 0xc0ffa0,
-    asteroidColor: 0x2a2a2a,
-    asteroidEmissive: 0x003300,
-    asteroidSpecular: 0x224422,
     hudAccent: "#00C805",
+    diskOuterColor: 0x004a00,
+    jetColor: 0x80ff60,
+    ringColor: 0x00C805,
+    foregroundLineColor: 0x80ff80,
   },
   fidelity: {
     watermark: "FIDELITY",
-    nebulaColors: ["#00285A", "#3a6db0", "#C5922A"],
+    nebulaColors: ["#00285A", "#3a6db0", "#1a1404"],
     starTint: 0xe0eaff,
-    coreColor: 0xffd060,
-    coreHaloColor: 0xC5922A,
-    ambientColor: 0x101830,
-    keyLightColor: 0xffe090,
-    asteroidColor: 0x2a3040,
-    asteroidEmissive: 0x100808,
-    asteroidSpecular: 0xC5922A,
     hudAccent: "#C5922A",
+    diskOuterColor: 0x002850,
+    jetColor: 0xffd060,
+    ringColor: 0xC5922A,
+    foregroundLineColor: 0xffe080,
   },
   schwab: {
     watermark: "SCHWAB",
-    nebulaColors: ["#0047BB", "#4080ff", "#003087"],
+    nebulaColors: ["#001840", "#0047BB", "#80c0ff"],
     starTint: 0xffffff,
-    coreColor: 0xe8f0ff,
-    coreHaloColor: 0x0047BB,
-    ambientColor: 0x0a1840,
-    keyLightColor: 0xc0d8ff,
-    asteroidColor: 0x6a7080,
-    asteroidEmissive: 0x080810,
-    asteroidSpecular: 0xa0c0ff,
     hudAccent: "#0047BB",
+    diskOuterColor: 0x002878,
+    jetColor: 0xc0e0ff,
+    ringColor: 0x0078ff,
+    foregroundLineColor: 0xb0d8ff,
   },
   td_ameritrade: {
     watermark: "TD AMERITRADE",
-    nebulaColors: ["#3aff8a", "#00b050", "#001a08"],
+    nebulaColors: ["#001a08", "#00b050", "#3aff8a"],
     starTint: 0xe8ffe0,
-    coreColor: 0xa0ff60,
-    coreHaloColor: 0x00b050,
-    ambientColor: 0x081808,
-    keyLightColor: 0xc0ffa0,
-    asteroidColor: 0x202820,
-    asteroidEmissive: 0x002a08,
-    asteroidSpecular: 0x4a8040,
     hudAccent: "#3aff8a",
+    diskOuterColor: 0x003820,
+    jetColor: 0xa0ff60,
+    ringColor: 0x3aff8a,
+    foregroundLineColor: 0x80ffa0,
   },
 };
 
