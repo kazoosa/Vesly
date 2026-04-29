@@ -44,19 +44,6 @@ export function ConnectButton() {
   // broker-specific theme (Robinhood green, Fidelity navy/gold, etc.).
   // First entry is used; null when the response hasn't arrived yet.
   const [connectedBroker, setConnectedBroker] = useState<string | null>(null);
-  // Background-poll state. When the user clicks the X on the overlay
-  // mid-poll, we close the overlay but keep pollUntilTransactionsArrive
-  // running. The TransactionsLoadingBanner mounts at the top of the
-  // dashboard with a live count-up timer; when the poll resolves, the
-  // banner flips to a success state and auto-dismisses after 3s.
-  const [bgPollActive, setBgPollActive] = useState(false);
-  const [bgPollStartedAt, setBgPollStartedAt] = useState<number>(0);
-  const [bgPollResult, setBgPollResult] = useState<number | null>(null);
-  // Mirror bgPollActive in a ref so the in-flight poll closure
-  // can read the latest value when it resolves (state in async
-  // closures is stale).
-  const bgPollActiveRef = useRef(false);
-  bgPollActiveRef.current = bgPollActive;
   const elapsedTimerRef = useRef<number | null>(null);
   const [overlaySteps, setOverlaySteps] = useState<{
     connecting: { state: StepState };
@@ -449,22 +436,7 @@ export function ConnectButton() {
             errors: out.errors,
             fully_succeeded: out.fully_succeeded,
           });
-          // Two completion paths:
-          // (a) overlay still open — run the Phase 3 client-side
-          //     animation, set ready, fire the success toast.
-          // (b) user clicked X mid-poll — overlay is closed; flip
-          //     the banner to its success state and fire the toast.
-          //     Banner auto-dismisses after 3s (handled in
-          //     TransactionsLoadingBanner).
-          if (bgPollActiveRef.current) {
-            setBgPollResult(polled.transactionsAdded);
-            toast.show({
-              message: `✓ ${polled.transactionsAdded} transaction${
-                polled.transactionsAdded === 1 ? "" : "s"
-              } loaded`,
-              durationMs: 5_000,
-            });
-          } else if (firstConnect) {
+          if (firstConnect) {
             // Phase 3 — writing transactions. Brief 1.2s animation
             // so the user sees the bar advance from 40% to 100%
             // with the count in view.
@@ -773,125 +745,7 @@ export function ConnectButton() {
           setOverlayReady(true);
           stopOverlayTimer();
         }}
-        onExit={() => {
-          // X button: close the overlay BUT keep the poll loop
-          // running. The persistent banner mounts (see <TransactionsLoadingBanner />
-          // below); the parent pollUntilTransactionsArrive promise
-          // remains pending and resolves whenever transactions land.
-          // We do NOT flip skipWaitRef so the loop continues.
-          setOverlayOpen(false);
-          stopOverlayTimer();
-          setBgPollActive(true);
-          setBgPollStartedAt(Date.now());
-        }}
       />
-
-      <TransactionsLoadingBanner
-        active={bgPollActive}
-        startedAt={bgPollStartedAt}
-        completedCount={bgPollResult}
-        onDismiss={() => {
-          setBgPollActive(false);
-          setBgPollResult(null);
-        }}
-      />
-    </div>
-  );
-}
-
-/**
- * Persistent banner shown at the top of the dashboard when the user
- * clicks the X on the sync overlay mid-broker-wait. Shows a live
- * count-up timer; when the parent flips `completedCount` from null
- * to a number, banner switches to a success state and auto-dismisses
- * after 3 seconds.
- *
- * The banner is fixed-positioned at the top of the viewport so it
- * shows on every page until dismissed. The poller itself continues
- * running inside ConnectButton's pollUntilTransactionsArrive promise
- * — this is just the surface.
- */
-function TransactionsLoadingBanner({
-  active,
-  startedAt,
-  completedCount,
-  onDismiss,
-}: {
-  active: boolean;
-  startedAt: number;
-  completedCount: number | null;
-  onDismiss: () => void;
-}) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [active]);
-
-  // Auto-dismiss 3 seconds after completion lands.
-  useEffect(() => {
-    if (!active || completedCount === null) return;
-    const id = window.setTimeout(onDismiss, 3000);
-    return () => window.clearTimeout(id);
-  }, [active, completedCount, onDismiss]);
-
-  if (!active) return null;
-
-  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  const timeStr =
-    elapsed < 60
-      ? `${seconds}s`
-      : `${minutes}:${seconds.toString().padStart(2, "0")}`;
-
-  const done = completedCount !== null;
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto motion-safe:animate-fade-in"
-    >
-      <div
-        className={`flex items-center gap-3 rounded-md border px-3.5 py-2 text-xs shadow-lg ${
-          done
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-            : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-        }`}
-        style={{ backdropFilter: "blur(6px)" }}
-      >
-        <span
-          className={`inline-block w-2 h-2 rounded-full bg-current ${
-            done ? "" : "animate-pulse"
-          }`}
-          aria-hidden
-        />
-        <span>
-          {done ? (
-            <>
-              ✓ {completedCount} transaction{completedCount === 1 ? "" : "s"} loaded
-            </>
-          ) : (
-            <>
-              Transaction history still loading —{" "}
-              <span className="font-num tabular-nums">{timeStr}</span>
-            </>
-          )}
-        </span>
-        {!done && (
-          <button
-            type="button"
-            onClick={onDismiss}
-            className="text-current opacity-60 hover:opacity-100 text-base leading-none"
-            aria-label="Dismiss"
-            title="Dismiss"
-          >
-            ×
-          </button>
-        )}
-      </div>
     </div>
   );
 }

@@ -74,12 +74,6 @@ interface Props {
    *  broker-specific theme (Robinhood green, Fidelity navy/gold,
    *  Schwab electric blue, etc). Optional; falls back to default. */
   brokerName?: string | null;
-  /** Click-X behavior. When provided AND the overlay is in
-   *  Phase 2 (waitingForBroker) or Phase 3 (writing), the X button
-   *  appears in the card's top-right corner. Clicking it should
-   *  dismiss the overlay while keeping the background poll running.
-   *  Parent is responsible for showing a persistent banner thereafter. */
-  onExit?: () => void;
 }
 
 // Step weights — sum to 40, since Phase 1 fills only to 40%.
@@ -195,7 +189,6 @@ export function PostConnectSyncOverlay({
   ready,
   onSkipWait,
   brokerName,
-  onExit,
 }: Props) {
   // Phase derivation.
   const writing = Boolean(steps.transactions.writing) && !ready;
@@ -320,6 +313,19 @@ export function PostConnectSyncOverlay({
 
   // ---- Audio mute (drives ambient track in SpaceScene) ---------------
   const [audioEnabled, setAudioEnabled] = useState(true);
+
+  // Minimized state. The X button on the card collapses the card
+  // out of view but keeps the scene rendering full-screen so the
+  // user can drag, zoom, and warp without the box in the way. A
+  // small "restore" pill appears in the bottom-right; clicking it
+  // brings the card back. Sync continues in foreground exactly as
+  // before — this is purely a visibility toggle.
+  const [minimized, setMinimized] = useState(false);
+  // Reset minimized state when the overlay closes (so the next open
+  // starts with the card visible).
+  useEffect(() => {
+    if (!open) setMinimized(false);
+  }, [open]);
 
   // ---- Escape hatch (10 minute) ---------------------------------------
   const showEscapeHatch =
@@ -492,8 +498,9 @@ export function PostConnectSyncOverlay({
         />
       )}
 
-      {/* Bottom-right: control hint. */}
-      {sceneActive && (
+      {/* Bottom-right: control hint. Suppressed while minimized so
+          it doesn't fight with the restore pill in the same corner. */}
+      {sceneActive && !minimized && (
         <div
           className="absolute bottom-4 right-4 z-[1] text-white pointer-events-none transition-opacity duration-1000"
           style={{
@@ -506,11 +513,50 @@ export function PostConnectSyncOverlay({
         </div>
       )}
 
+      {/* Restore pill — visible only while the card is minimized.
+          Click to bring the card back. Themed in the broker accent
+          color so it reads as part of the scene rather than an
+          afterthought, and pulses subtly so the user notices it. */}
+      {minimized && (
+        <button
+          type="button"
+          onClick={() => setMinimized(false)}
+          className="absolute bottom-4 right-4 z-[3] rounded-full inline-flex items-center justify-center transition-transform hover:scale-110 active:scale-95 motion-safe:animate-pulse"
+          style={{
+            width: 56,
+            height: 56,
+            background: "rgba(0,0,0,0.55)",
+            border: `2px solid ${theme.hudAccent}`,
+            color: theme.hudAccent,
+            boxShadow: `0 8px 24px -4px rgba(0,0,0,0.4), 0 0 18px -2px ${theme.hudAccent}`,
+            backdropFilter: "blur(6px)",
+            cursor: "pointer",
+          }}
+          title="Show progress card"
+          aria-label="Show progress card"
+        >
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <rect x="4" y="6" width="16" height="12" rx="2" />
+            <line x1="4" y1="10" x2="20" y2="10" />
+          </svg>
+        </button>
+      )}
+
       <div
         ref={cardRef}
-        className={`card max-w-md overflow-hidden animate-scale-in z-[2] ${
-          recentering ? "transition-all duration-300 ease-out" : ""
-        }`}
+        className={`card max-w-md overflow-hidden z-[2] ${
+          minimized ? "" : "animate-scale-in"
+        } ${recentering ? "transition-all duration-300 ease-out" : ""}`}
         style={{
           position: "fixed",
           left: cardPos?.left ?? "50%",
@@ -518,41 +564,51 @@ export function PostConnectSyncOverlay({
           // Fall back to translate-centering until the measurement
           // effect has run on first paint. Once cardPos is set we use
           // explicit left/top so dragging works.
-          transform: cardPos ? "none" : "translate(-50%, -50%)",
+          // Minimize: scale + fade out, keep the DOM mounted so the
+          // measurement effect retains card dimensions for restore.
+          transform: minimized
+            ? cardPos
+              ? "scale(0.85)"
+              : "translate(-50%, -50%) scale(0.85)"
+            : cardPos
+              ? "none"
+              : "translate(-50%, -50%)",
           width: "calc(100% - 32px)",
           maxWidth: 448,
           boxShadow:
             "0 24px 60px -12px rgb(0 0 0 / 0.45), 0 8px 20px -6px rgb(0 0 0 / 0.25)",
+          opacity: minimized ? 0 : 1,
+          transition: "opacity 200ms ease-out, transform 240ms ease-out",
+          pointerEvents: minimized ? "none" : "auto",
         }}
       >
-        {/* X button — only when an exit handler is provided AND we're
-            past Phase 1 (so the sync wait can continue in the
-            background after dismiss). Hidden during Phase 1 because
-            there's nothing to background-continue at that point. */}
-        {onExit && (waitingForBroker || writing) && (
-          <button
-            type="button"
-            onClick={onExit}
-            className="absolute top-1.5 right-1.5 w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg-primary hover:bg-bg-hover transition-colors z-[1]"
-            title="Exit — transactions will continue loading in the background"
-            aria-label="Exit (continue loading in background)"
+        {/* X button — minimizes the card so the user can play with
+            the scene full-screen. Sync continues unchanged; the
+            card just hides. A floating restore pill appears at the
+            bottom-right while minimized; clicking it brings the
+            card back. */}
+        <button
+          type="button"
+          onClick={() => setMinimized(true)}
+          className="absolute top-1.5 right-1.5 w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg-primary hover:bg-bg-hover transition-colors z-[1]"
+          title="Hide this box (sync keeps running)"
+          aria-label="Hide progress card"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
           >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        )}
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
 
         {/* Drag handle. Three dots, cursor flips to grab/grabbing. */}
         <div
