@@ -1,19 +1,28 @@
 import { useEffect, useState } from "react";
-import { ApertureOverlay, type Phase } from "./ApertureOverlay";
+import { ApertureOverlay } from "./ApertureOverlay";
 
 /**
- * Localhost preview shell for the Aperture overlay. Mounted only when
- * `?preview=overlay` is in the URL AND we're in a dev build (gated
- * by import.meta.env.DEV — never ships to prod).
+ * Localhost preview shell for the Aperture overlay v2 (the 26-shot
+ * timeline). Mounted only when ?preview=overlay is in the URL AND
+ * we're in a dev build (gated by import.meta.env.DEV in App.tsx).
  *
  * Keyboard shortcuts:
- *   1 / 2 / 3   — jump to and HOLD that phase. Does not auto-advance.
- *   0           — jump to the "done" phase (post-flash steady state).
- *   space       — trigger the photographic white flash.
- *   r           — reset to phase 1.
+ *   1..9   — jump to and play shot #N (1=first shot, 9=ninth, etc.)
+ *   0      — jump to the radar hold shot (Shot 23) and let it
+ *            settle into hold mode
+ *   r      — reset to t=0
+ *   .      — jump forward 5 seconds
+ *   ,      — jump backward 5 seconds
+ *   c      — fire the white-flash completion (sets syncComplete)
  *
- * Mock state lives in the constants below — edit one place to change
- * what you see in the preview without re-running anything.
+ * Note: shots play through to the next one. To "stop on phase 2 and
+ * stare," press the number for the shot you want and don't press
+ * anything else; the overlay will play that shot and continue. If
+ * you want true pause-on-shot, the preview would need a paused-time
+ * flag passed into the overlay — happy to add later.
+ *
+ * Mock state lives in the constants below — edit one place to
+ * change broker theme / counts / starting position.
  */
 
 // ---- Mock state — edit these to tune the preview ------------------
@@ -21,59 +30,97 @@ const MOCK_BROKER_NAME = "Robinhood"; // try "Fidelity", "Schwab", "TD Ameritrad
 const MOCK_ACCOUNTS = 2;
 const MOCK_HOLDINGS = 28;
 const MOCK_TRANSACTIONS = 919;
-const MOCK_WAIT_SECONDS_AT_PHASE_2 = 47; // what the timer reads when you land on phase 2
-const MOCK_MESSAGE = "Connecting to your broker";
+
+// Cumulative-millisecond start times for each shot, computed to match
+// the TIMELINE array in ApertureOverlay.tsx. If you change durations
+// there, update this list too.
+const SHOT_START_MS = [
+  0,        // 1 — black void
+  3000,     // 2 — astronomical chart
+  13000,    // 3 — blueprint workshop
+  21000,    // 4 — girl with lantern
+  24000,    // 5 — planetarium
+  32000,    // 6 — telescope dolly
+  36000,    // 7 — first flash
+  36400,    // 8 — starfield window
+  48400,    // 9 — dual viewports
+  54400,    // 10 — collage
+  60400,    // 11 — monochrome interior
+  68400,    // 12 — hanging moons
+  72400,    // 13 — cracked porthole
+  74400,    // 14 — girl looking up
+  78400,    // 15 — fast transitions
+  82400,    // 16 — flight a
+  86400,    // 17 — flight b
+  90400,    // 18 — flight c
+  94400,    // 19 — minimal
+  97400,    // 20 — twin orbs
+  101400,   // 21 — red beam
+  105400,   // 22 — radial burst
+  109400,   // 23 — radar (hold state)
+];
 
 export function ApertureOverlayPreview() {
-  const [phase, setPhase] = useState<Phase>(1);
-  const [flashing, setFlashing] = useState(false);
-  // Live timer that ticks once a second while on phase 2 so the
-  // bottom-right counter actually moves while you stare at it.
-  const [waitTick, setWaitTick] = useState(0);
-
-  useEffect(() => {
-    if (phase !== 2) {
-      setWaitTick(0);
-      return;
-    }
-    const id = window.setInterval(() => setWaitTick((n) => n + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [phase]);
+  // Remount key — the overlay tracks its own elapsed time internally
+  // via performance.now() and a startRef set on mount, so the only
+  // way to "scrub" or "reset" cleanly is to remount with a different
+  // key. We store an offset in localStorage-style state and append
+  // it to the key.
+  const [remountSeed, setRemountSeed] = useState(0);
+  const [syncComplete, setSyncComplete] = useState(false);
+  // Time-offset: every press of `1..9` etc. sets a new offset and
+  // bumps the remount seed. The overlay reads the offset on mount
+  // via __previewOffsetMs, so a remount jumps the timeline.
+  const [offsetMs, setOffsetMs] = useState(0);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      // Don't intercept when the user is typing somewhere — though
-      // this preview replaces the whole page so there's nothing to
-      // type in. Belt + braces.
       const tag = (e.target as HTMLElement | null)?.tagName ?? "";
       if (tag === "INPUT" || tag === "TEXTAREA") return;
 
-      switch (e.key) {
-        case "1":
-          setPhase(1);
-          break;
-        case "2":
-          setPhase(2);
-          break;
-        case "3":
-          setPhase(3);
-          break;
-        case "0":
-          setPhase("done");
-          break;
-        case " ":
-        case "Spacebar":
+      // Number keys 1..9 jump to shot N.
+      if (/^[1-9]$/.test(e.key)) {
+        const n = parseInt(e.key, 10) - 1;
+        if (n < SHOT_START_MS.length) {
           e.preventDefault();
-          setFlashing(true);
-          // Hold the flashing flag for the full peak+fade window so
-          // the overlay's internal timeline runs, then clear it so
-          // it's re-triggerable on the next press.
-          window.setTimeout(() => setFlashing(false), 600);
-          break;
+          setOffsetMs(SHOT_START_MS[n]!);
+          setSyncComplete(false);
+          setRemountSeed((s) => s + 1);
+        }
+        return;
+      }
+
+      switch (e.key) {
         case "r":
         case "R":
-          setPhase(1);
-          setFlashing(false);
+          e.preventDefault();
+          setOffsetMs(0);
+          setSyncComplete(false);
+          setRemountSeed((s) => s + 1);
+          break;
+        case ".":
+        case ">":
+          e.preventDefault();
+          setOffsetMs((o) => o + 5000);
+          setRemountSeed((s) => s + 1);
+          break;
+        case ",":
+        case "<":
+          e.preventDefault();
+          setOffsetMs((o) => Math.max(0, o - 5000));
+          setRemountSeed((s) => s + 1);
+          break;
+        case "c":
+        case "C":
+          e.preventDefault();
+          setSyncComplete(true);
+          break;
+        case "0":
+          // Jump to radar hold (last entry in SHOT_START_MS).
+          e.preventDefault();
+          setOffsetMs(SHOT_START_MS[SHOT_START_MS.length - 1]!);
+          setSyncComplete(false);
+          setRemountSeed((s) => s + 1);
           break;
         default:
           break;
@@ -83,47 +130,50 @@ export function ApertureOverlayPreview() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Pick an effective wait-seconds value:
-  //  - phase 2: starting offset + live tick
-  //  - else: undefined (overlay shows "—")
-  const waitSeconds =
-    phase === 2 ? MOCK_WAIT_SECONDS_AT_PHASE_2 + waitTick : undefined;
-
   return (
     <>
       <ApertureOverlay
-        phase={phase}
+        // Remount on seed change so startRef re-initializes with
+        // the new offset. Without remount, startRef sticks at its
+        // first value and seeking does nothing.
+        key={remountSeed}
+        __previewOffsetMs={offsetMs}
         brokerName={MOCK_BROKER_NAME}
-        waitSeconds={waitSeconds}
-        flashing={flashing}
         accountsCount={MOCK_ACCOUNTS}
         holdingsCount={MOCK_HOLDINGS}
-        transactionsCount={
-          phase === 3 || phase === "done" ? MOCK_TRANSACTIONS : 0
-        }
-        message={MOCK_MESSAGE}
+        transactionsCount={MOCK_TRANSACTIONS}
+        syncComplete={syncComplete}
+        onClose={() => {
+          // After the flash, reset the preview so we can play again.
+          window.setTimeout(() => {
+            setSyncComplete(false);
+            setOffsetMs(0);
+            setRemountSeed((s) => s + 1);
+          }, 600);
+        }}
       />
-      {/* Tiny dev-mode legend so I don't have to remember the keys
-          every time I open the preview. Stays at the very bottom-
-          right of the viewport, above the letterbox. Faint. */}
+      {/* Legend at very bottom-right */}
       <div
         style={{
           position: "fixed",
           right: 12,
-          bottom: 48,
+          bottom: 12,
           zIndex: 9999,
           color: "#888",
           fontFamily: "ui-monospace, monospace",
           fontSize: 10,
-          letterSpacing: "0.15em",
+          letterSpacing: "0.12em",
           textTransform: "uppercase",
-          background: "rgba(0,0,0,0.4)",
-          padding: "6px 10px",
+          background: "rgba(0,0,0,0.6)",
+          padding: "6px 12px",
           borderRadius: 4,
           pointerEvents: "none",
+          maxWidth: 460,
+          textAlign: "right",
+          lineHeight: 1.6,
         }}
       >
-        1·2·3 phase · 0 done · space flash · r reset
+        1–9 jump to shot · 0 radar hold · , . scrub ±5s · c flash · r reset
       </div>
     </>
   );
