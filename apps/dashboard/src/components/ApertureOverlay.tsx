@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { themeForBroker, type BrokerTheme } from "./spaceTheme";
+import {
+  ApertureFilters,
+  ApertureKeyframes,
+  AtmosphericHaze,
+  FilmGrain,
+  LitMoon,
+  RimLitSilhouette,
+} from "./apertureFilters";
 
 /**
  * Aperture overlay v2 — fixed timeline reproduction of the
@@ -329,69 +337,311 @@ function Shot3BlueprintWorkshop({ shotProgress, theme }: ShotContext) {
 
 // ---- Shot 4 · silhouetted girl with red orb lantern --------------
 function Shot4GirlLantern({ shotProgress, theme }: ShotContext) {
-  // Orb pulses gently — emotional beat.
-  const orbScale = 1 + 0.05 * Math.sin(shotProgress * Math.PI * 4);
+  // The orb is the only real light source in the frame. Everything
+  // else is a downstream consequence of it: the rim on her hair,
+  // the bounce on her chin, the warm haze in the lower-third, the
+  // ground twinkles barely catching its glow. The composition is
+  // intentionally negative-space-heavy — she's lower-left, the orb
+  // is slightly right of center, the rest of the frame is BLACK
+  // except for the suggestion of light.
+
+  // Orb pulse + slow drift (it's hovering, not held).
+  const orbPulse = 1 + 0.04 * Math.sin(shotProgress * Math.PI * 5);
+  const orbDrift = Math.sin(shotProgress * Math.PI * 1.4) * 6; // px
+
+  // Silhouette path — head + body + flowing hair behind + extended
+  // arm reaching toward the orb. Hand-tuned to read as the figure
+  // from the source frame. ViewBox is 400x600 to give us room for
+  // hair flying behind her.
+  const silhouettePath = `
+    M 200,80
+    Q 168,72 152,108
+    Q 142,136 152,168
+    Q 156,180 164,188
+    L 144,210
+    Q 96,244 80,304
+    Q 68,360 92,412
+    Q 116,464 156,512
+    L 60,560
+    L 60,600
+    L 360,600
+    L 380,540
+    L 320,490
+    Q 296,448 296,400
+    L 312,408
+    Q 350,420 386,406
+    L 384,386
+    Q 348,390 314,374
+    Q 292,360 274,338
+    Q 300,304 296,260
+    Q 290,212 250,184
+    Q 254,160 248,136
+    Q 240,98 220,82
+    Z
+
+    M 152,108
+    Q 100,150 76,232
+    Q 60,300 80,372
+    Q 96,448 96,508
+    Q 116,476 132,420
+    Q 144,360 156,304
+    Q 168,232 180,172
+    Q 168,140 152,108
+    Z
+  `;
+
   return (
     <div
       style={{
         position: "absolute",
         inset: 0,
+        // Near-black ground with the faintest warm haze pooling at
+        // the lower-left where the orb's bounce light would naturally
+        // settle.
         background:
-          "radial-gradient(ellipse at 30% 60%, #1a0a0e 0%, #050208 70%)",
+          "radial-gradient(ellipse at 38% 62%, #0e0608 0%, #050204 60%, #020102 100%)",
+        overflow: "hidden",
       }}
     >
-      {/* Long-haired girl silhouette, leaning left */}
+      {/* Ground floor — barely visible, just enough texture so the
+          horizon doesn't read as infinite black */}
       <div
         style={{
           position: "absolute",
-          left: "10%",
-          bottom: "0%",
-          width: "38%",
-          height: "85%",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: "30%",
+          background:
+            "linear-gradient(180deg, transparent 0%, #060304 100%)",
+        }}
+      />
+
+      {/* Floor twinkles — tiny specks catching the orb's distant
+          light. Positioned with hand-tuned coordinates so they read
+          as a sparse field, not random scatter. */}
+      <svg
+        viewBox="0 0 100 60"
+        preserveAspectRatio="none"
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: "100%",
+          height: "30%",
         }}
       >
-        <svg viewBox="0 0 200 400" style={{ width: "100%", height: "100%" }}>
-          {/* Head */}
-          <ellipse cx="100" cy="80" rx="38" ry="44" fill="#000" />
-          {/* Body — leaning forward */}
-          <path d="M 80,120 Q 30,260 60,400 L 160,400 Q 190,260 130,120 Z" fill="#000" />
-          {/* Long hair flowing behind */}
-          <path d="M 70,100 Q 20,180 30,300 Q 50,220 78,140 Z" fill="#000" opacity={0.85} />
-          {/* Outstretched arm (geometric — toward orb) */}
-          <path d="M 140,160 Q 200,190 250,200 L 245,215 Q 195,205 138,178 Z" fill="#000" />
-        </svg>
-      </div>
-      {/* Glowing red orb she's reaching for */}
+        {[
+          { x: 12, y: 20, s: 0.3 },
+          { x: 19, y: 32, s: 0.5 },
+          { x: 28, y: 14, s: 0.4 },
+          { x: 36, y: 36, s: 0.6 },
+          { x: 47, y: 22, s: 0.5 },
+          { x: 58, y: 30, s: 0.4 },
+          { x: 67, y: 18, s: 0.3 },
+          { x: 73, y: 44, s: 0.6 },
+          { x: 82, y: 26, s: 0.5 },
+          { x: 90, y: 38, s: 0.4 },
+        ].map((s, i) => (
+          <circle
+            key={i}
+            cx={s.x}
+            cy={s.y}
+            r={s.s * 0.18}
+            fill="#fff"
+            opacity={0.25 + 0.15 * Math.sin(shotProgress * Math.PI * 3 + i * 0.7)}
+          />
+        ))}
+      </svg>
+
+      {/* Atmospheric haze layered behind the figure — warm, breathy */}
+      <AtmosphericHaze
+        color="rgba(180, 80, 60, 0.35)"
+        opacity={0.3}
+        cx="48%"
+        cy="46%"
+        radius={42}
+        z={1}
+      />
+
+      {/* Secondary tiny orb higher and to the right of the main one */}
       <div
         style={{
           position: "absolute",
-          left: "44%",
-          top: "44%",
+          left: `calc(58% + ${orbDrift * 0.4}px)`,
+          top: "26%",
+          width: 14,
+          height: 14,
+          borderRadius: "50%",
+          background:
+            "radial-gradient(circle, #fff5b0 0%, #ff8030 35%, #c02020 75%, transparent 100%)",
+          boxShadow: "0 0 28px rgba(255, 100, 60, 0.7), 0 0 8px #ff8030",
+          opacity: 0.9,
+          filter: "blur(0.3px)",
+          animation: "ap-orb-flicker 7s ease-in-out infinite",
+          zIndex: 3,
+        }}
+      />
+
+      {/* The shadow blade / curved object near the second orb —
+          rendered as a thin curved silhouette at very low opacity,
+          gives the frame the second focal element from the source */}
+      <svg
+        viewBox="0 0 60 80"
+        style={{
+          position: "absolute",
+          left: "62%",
+          top: "26%",
           width: 36,
-          height: 36,
-          borderRadius: "50%",
-          background:
-            "radial-gradient(circle, #ff8030 0%, #c02020 50%, #500810 100%)",
-          boxShadow: "0 0 60px #c02020, 0 0 18px #ff8030",
-          transform: `scale(${orbScale})`,
+          height: 48,
+          opacity: 0.7,
+          zIndex: 2,
         }}
-      />
-      {/* Smaller second orb, higher */}
+      >
+        <path
+          d="M 30,5 Q 50,30 38,76 Q 28,52 22,30 Z"
+          fill="#000"
+          stroke="rgba(255, 120, 80, 0.25)"
+          strokeWidth="0.4"
+        />
+      </svg>
+
+      {/* MAIN ORB — the actual light source.
+          Layered radial gradients: bright white-yellow core, hot
+          orange middle, deep red outer, magenta-pink corona.
+          Plus a wide soft halo and a sharp inner highlight. */}
       <div
         style={{
           position: "absolute",
-          left: "52%",
+          left: `calc(50% + ${orbDrift}px)`,
+          top: "44%",
+          transform: `translate(-50%, -50%) scale(${orbPulse})`,
+          width: 56,
+          height: 56,
+          zIndex: 4,
+          animation: "ap-orb-pulse 1.6s ease-in-out infinite",
+        }}
+      >
+        {/* Wide outer corona — magenta-pink glow extending far */}
+        <div
+          style={{
+            position: "absolute",
+            inset: -120,
+            background:
+              "radial-gradient(circle, rgba(255, 100, 130, 0.35) 0%, rgba(220, 60, 90, 0.18) 30%, transparent 60%)",
+            mixBlendMode: "screen",
+          }}
+        />
+        {/* Mid-range warm halo */}
+        <div
+          style={{
+            position: "absolute",
+            inset: -50,
+            background:
+              "radial-gradient(circle, rgba(255, 160, 80, 0.6) 0%, rgba(255, 80, 60, 0.3) 40%, transparent 70%)",
+            mixBlendMode: "screen",
+          }}
+        />
+        {/* Tight inner glow */}
+        <div
+          style={{
+            position: "absolute",
+            inset: -16,
+            borderRadius: "50%",
+            background:
+              "radial-gradient(circle, rgba(255, 240, 200, 0.95) 0%, rgba(255, 140, 60, 0.7) 40%, transparent 75%)",
+            mixBlendMode: "screen",
+          }}
+        />
+        {/* The orb body */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: "50%",
+            background:
+              "radial-gradient(circle at 35% 35%, #fff8d8 0%, #ffc060 25%, #f06030 55%, #a01828 80%, #4a0810 100%)",
+            boxShadow:
+              "inset -4px -6px 12px rgba(80, 0, 20, 0.7), inset 3px 3px 6px rgba(255, 240, 200, 0.5)",
+          }}
+        />
+        {/* Specular highlight */}
+        <div
+          style={{
+            position: "absolute",
+            top: "22%",
+            left: "28%",
+            width: "22%",
+            height: "18%",
+            borderRadius: "50%",
+            background:
+              "radial-gradient(circle, rgba(255,255,255,0.9) 0%, transparent 80%)",
+          }}
+        />
+      </div>
+
+      {/* THE GIRL — silhouette with rim light from the orb, soft
+          bounce on the chin/neck. Positioned lower-left.
+          Rim light direction = unit vector from her center to
+          the orb (orb is to her right and slightly up). */}
+      <div
+        style={{
+          position: "absolute",
+          left: "8%",
+          bottom: "0%",
+          width: "44%",
+          height: "92%",
+          zIndex: 3,
+        }}
+      >
+        <RimLitSilhouette
+          pathD={silhouettePath}
+          viewBoxW={400}
+          viewBoxH={600}
+          rimColor="#ffcc88"
+          lightDir={{ x: 0.85, y: -0.45 }} // toward upper-right, where orb is
+          rimStrength={0.85}
+          bounceColor="#cc4030"
+          bounceStrength={0.25}
+        />
+      </div>
+
+      {/* Light wrap — a soft warm radial overlay positioned where
+          the orb is, blended SCREEN to add to the silhouette's
+          edge. This is the "light wrapping around her" effect. */}
+      <div
+        style={{
+          position: "absolute",
+          left: "30%",
           top: "30%",
-          width: 12,
-          height: 12,
-          borderRadius: "50%",
+          width: "40%",
+          height: "55%",
           background:
-            "radial-gradient(circle, #ff8030 0%, #c02020 70%, #500810 100%)",
-          boxShadow: "0 0 22px #c02020",
-          opacity: 0.85,
+            "radial-gradient(circle at 70% 30%, rgba(255, 180, 120, 0.4) 0%, transparent 50%)",
+          mixBlendMode: "screen",
+          pointerEvents: "none",
+          zIndex: 4,
+          filter: "blur(2px)",
         }}
       />
-      {/* Tiny watermark — keeps it from feeling like a generic dark frame */}
+
+      {/* Film grain over the whole frame */}
+      <FilmGrain opacity={0.07} />
+
+      {/* Subtle vignette — tightens focus to the central orb area */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(ellipse at 48% 50%, transparent 30%, rgba(0,0,0,0.55) 95%)",
+          pointerEvents: "none",
+          zIndex: 49,
+        }}
+      />
+
+      {/* Tiny watermark */}
       <div
         style={{
           position: "absolute",
@@ -401,7 +651,8 @@ function Shot4GirlLantern({ shotProgress, theme }: ShotContext) {
           fontFamily: "ui-monospace, monospace",
           fontSize: 9,
           letterSpacing: "0.3em",
-          opacity: 0.3,
+          opacity: 0.22,
+          zIndex: 50,
         }}
       >
         I
@@ -540,103 +791,320 @@ function Shot5Planetarium({ shotProgress, theme }: ShotContext) {
 
 // ---- Shot 6 · backlit telescope dolly forward --------------------
 function Shot6Telescope({ shotProgress }: ShotContext) {
-  // Camera dollies forward — bloom grows.
-  const moonScale = 1 + shotProgress * 1.4;
-  const bloomOpacity = Math.min(1, shotProgress * 1.8);
+  // The composition is a one-point perspective: nested arches
+  // recede toward the centered moon. The camera slowly dollies
+  // forward — the arches expand, the moon's halo grows, the
+  // bloom intensifies. Color grade: cool-blue inner core,
+  // warm-magenta edges (from a wide vignette gradient pushing
+  // into pinks at the outer 30%).
+
+  const dolly = shotProgress; // 0..1
+  const moonHaloScale = 1 + dolly * 0.6;
+  const archScale = 1 + dolly * 0.2;
+  const bloomBoost = 0.7 + dolly * 0.5;
+
+  // Three concentric arches receding toward the moon. Each is
+  // sized so it appears further back than the last — width and
+  // height shrink, the lateral darken increases.
+  const arches = [
+    { w: 100, h: 95, fillBg: "#1a1230", fillRing: "#221a3c", strokeOpacity: 0.6, depthScale: 1.0 },
+    { w: 70, h: 78, fillBg: "#1a1638", fillRing: "#2a2048", strokeOpacity: 0.55, depthScale: 0.92 },
+    { w: 50, h: 64, fillBg: "#1c1a44", fillRing: "#322852", strokeOpacity: 0.5, depthScale: 0.86 },
+    { w: 36, h: 52, fillBg: "#221e50", fillRing: "#382c5e", strokeOpacity: 0.45, depthScale: 0.8 },
+  ];
+
   return (
     <div
       style={{
         position: "absolute",
         inset: 0,
         background:
-          "radial-gradient(ellipse at 50% 50%, #1a1830 0%, #0a0820 60%, #02020a 100%)",
+          // Layered: deep magenta at edges → cool blue at center,
+          // exactly like the source's vignette grade.
+          `radial-gradient(ellipse at 50% 48%, #2840a8 0%, #1a2068 28%, #0a0a30 60%, #200825 88%, #1a0418 100%)`,
         overflow: "hidden",
       }}
     >
-      {/* Stone arched walls left / right */}
-      <div
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: "20%",
-          background:
-            "linear-gradient(90deg, #050410 0%, transparent 100%)",
-          borderRight: "1px solid #1a1830",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          right: 0,
-          top: 0,
-          bottom: 0,
-          width: "20%",
-          background:
-            "linear-gradient(270deg, #050410 0%, transparent 100%)",
-          borderLeft: "1px solid #1a1830",
-        }}
-      />
-      {/* Glowing blue moon disc */}
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: "40%",
-          width: 110,
-          height: 110,
-          marginLeft: -55,
-          marginTop: -55,
-          borderRadius: "50%",
-          background:
-            "radial-gradient(circle, #ffffff 0%, #80c0ff 50%, transparent 75%)",
-          boxShadow: `0 0 ${50 + shotProgress * 100}px #60a0ff, 0 0 ${20 + shotProgress * 60}px #fff`,
-          transform: `scale(${moonScale})`,
-        }}
-      />
-      {/* Concentric rings around moon */}
-      <svg
-        viewBox="0 0 800 600"
-        preserveAspectRatio="xMidYMid slice"
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
-      >
-        {[100, 140, 180].map((r, i) => (
-          <circle key={i} cx={400} cy={240} r={r * moonScale * 0.7} fill="none" stroke="#a0c0ff" strokeWidth={1} opacity={0.4 - i * 0.1} />
-        ))}
-      </svg>
-      {/* Telescope tripod silhouette */}
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          bottom: "8%",
-          width: 80,
-          height: 220,
-          marginLeft: -40,
-        }}
-      >
-        <svg viewBox="0 0 80 220" style={{ width: "100%", height: "100%" }}>
-          {/* Body */}
-          <rect x={32} y={60} width={16} height={80} fill="#000" />
-          <circle cx={40} cy={50} r={14} fill="#000" />
-          {/* Tripod legs */}
-          <line x1={40} y1={140} x2={4} y2={216} stroke="#000" strokeWidth={3} />
-          <line x1={40} y1={140} x2={76} y2={216} stroke="#000" strokeWidth={3} />
-          <line x1={40} y1={140} x2={40} y2={216} stroke="#000" strokeWidth={3} />
-        </svg>
-      </div>
-      {/* Bloom overlay grows toward end */}
+      {/* Outer warm-magenta vignette layer — pushes the corners
+          to that violet-pink tone */}
       <div
         style={{
           position: "absolute",
           inset: 0,
           background:
-            "radial-gradient(circle at 50% 40%, rgba(220,235,255,0.5) 0%, transparent 60%)",
-          opacity: bloomOpacity,
+            "radial-gradient(ellipse at 50% 50%, transparent 35%, rgba(180, 60, 100, 0.18) 65%, rgba(80, 20, 60, 0.5) 100%)",
+          mixBlendMode: "screen",
           pointerEvents: "none",
         }}
       />
+
+      {/* Stars scattered upper-right + sparse elsewhere — small,
+          bright, with proper bloom on each */}
+      <svg
+        viewBox="0 0 100 56"
+        preserveAspectRatio="none"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+        }}
+      >
+        {[
+          { x: 78, y: 8, r: 0.45, b: 1.5 },
+          { x: 87, y: 18, r: 0.55, b: 2.0 },
+          { x: 92, y: 12, r: 0.35, b: 1.2 },
+          { x: 14, y: 6, r: 0.4, b: 1.4 },
+          { x: 22, y: 16, r: 0.3, b: 1.0 },
+          { x: 65, y: 5, r: 0.35, b: 1.2 },
+          { x: 50, y: 9, r: 0.3, b: 1.0 },
+          { x: 96, y: 22, r: 0.4, b: 1.4 },
+        ].map((s, i) => (
+          <g key={i}>
+            <circle cx={s.x} cy={s.y} r={s.r * 2.4} fill="#fff8e0" opacity={0.18 * (1 + 0.3 * Math.sin(shotProgress * 4 + i))} />
+            <circle cx={s.x} cy={s.y} r={s.r * 1.4} fill="#fff8e0" opacity={0.4} />
+            <circle cx={s.x} cy={s.y} r={s.r} fill="#fff" opacity={0.95} />
+            {/* 4-point sparkle */}
+            <line x1={s.x - s.b} y1={s.y} x2={s.x + s.b} y2={s.y} stroke="#fff" strokeWidth={0.08} opacity={0.7} />
+            <line x1={s.x} y1={s.y - s.b} x2={s.x} y2={s.y + s.b} stroke="#fff" strokeWidth={0.08} opacity={0.7} />
+          </g>
+        ))}
+      </svg>
+
+      {/* Receding arch tunnel — nested arch shapes, each smaller and
+          deeper into the frame. Built as SVG so we can stack with
+          proper z-order and gradient fills. */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          transform: `scale(${archScale})`,
+          transformOrigin: "50% 50%",
+          transition: "none",
+        }}
+      >
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="xMidYMid slice"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+        >
+          <defs>
+            <linearGradient id="arch-stone" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#1a1430" stopOpacity="0.95" />
+              <stop offset="60%" stopColor="#100828" stopOpacity="1" />
+              <stop offset="100%" stopColor="#08041a" stopOpacity="1" />
+            </linearGradient>
+          </defs>
+
+          {/* Outermost arch frame — fills the whole top of the
+              frame with the stone color, leaves a tall arch
+              cutout in the middle. Path: rect minus arch hole. */}
+          {arches.map((a, i) => {
+            const x0 = (100 - a.w) / 2;
+            const x1 = x0 + a.w;
+            const y0 = 0; // top of frame
+            const yArchTop = 100 - a.h * 0.95;
+            const yArchHaunch = 100 - a.h * 0.6;
+            const y1 = 100;
+            return (
+              <path
+                key={i}
+                d={`
+                  M 0,${y0}
+                  L 100,${y0}
+                  L 100,${y1}
+                  L 0,${y1}
+                  Z
+                  M ${x0},${y1}
+                  L ${x0},${yArchHaunch}
+                  Q ${x0},${yArchTop} ${(x0 + x1) / 2},${yArchTop}
+                  Q ${x1},${yArchTop} ${x1},${yArchHaunch}
+                  L ${x1},${y1}
+                  Z
+                `}
+                fillRule="evenodd"
+                fill={i === 0 ? "url(#arch-stone)" : a.fillBg}
+                stroke={a.fillRing}
+                strokeWidth="0.15"
+                opacity={a.strokeOpacity}
+              />
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* GOD-RAY bands — three soft bright triangles emanating
+          from the moon position downward through the arch.
+          Animated with a slow drift to feel volumetric. */}
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="xMidYMid slice"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          mixBlendMode: "screen",
+          pointerEvents: "none",
+          animation: "ap-godray-shift 4.5s ease-in-out infinite",
+        }}
+      >
+        <defs>
+          <linearGradient id="godray-grad" x1="50%" y1="0%" x2="50%" y2="100%">
+            <stop offset="0%" stopColor="#a0c8ff" stopOpacity={0.5 * bloomBoost} />
+            <stop offset="60%" stopColor="#80a0ff" stopOpacity={0.15 * bloomBoost} />
+            <stop offset="100%" stopColor="#80a0ff" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon points="50,38 38,100 62,100" fill="url(#godray-grad)" />
+        <polygon points="50,38 30,100 70,100" fill="url(#godray-grad)" opacity="0.5" />
+        <polygon points="50,38 22,100 78,100" fill="url(#godray-grad)" opacity="0.25" />
+      </svg>
+
+      {/* MOON — the actual focal point, dead center inside the
+          deepest arch. LitMoon for proper sphere shading. */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "44%",
+          transform: `translate(-50%, -50%) scale(${moonHaloScale})`,
+          width: 80,
+          height: 80,
+          zIndex: 4,
+        }}
+      >
+        <LitMoon
+          size={80}
+          phase={0}
+          litColor="#e8f0ff"
+          shadowColor="#1a2848"
+          rimColor="#a0c8ff"
+          glowColor="#60a0ff"
+          lightAngle={-25}
+          breathe
+        />
+      </div>
+
+      {/* Concentric tone rings around the moon — the source has
+          this very clearly */}
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="xMidYMid slice"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+        }}
+      >
+        {[8, 12, 17, 23, 30].map((r, i) => (
+          <circle
+            key={i}
+            cx={50}
+            cy={44}
+            r={r * moonHaloScale}
+            fill="none"
+            stroke={`rgba(160, 200, 255, ${0.5 - i * 0.08})`}
+            strokeWidth={0.18}
+          />
+        ))}
+      </svg>
+
+      {/* Floor strip — thin warm horizon line at the base of the
+          deepest arch where the telescope sits */}
+      <div
+        style={{
+          position: "absolute",
+          left: "30%",
+          right: "30%",
+          bottom: "12%",
+          height: 1,
+          background:
+            "linear-gradient(90deg, transparent 0%, rgba(180, 200, 255, 0.6) 50%, transparent 100%)",
+          boxShadow: "0 0 8px rgba(180, 200, 255, 0.5)",
+        }}
+      />
+
+      {/* Telescope — tripod with body + lens. Sits front-center
+          but small, framed by the deepest arch. Pure black
+          silhouette — no rim, since the source's telescope is
+          a clear cutout. */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "8%",
+          width: 56,
+          height: 130,
+          marginLeft: -28,
+          zIndex: 5,
+        }}
+      >
+        <svg viewBox="0 0 56 130" style={{ width: "100%", height: "100%", overflow: "visible" }}>
+          {/* Telescope barrel — small angled tube */}
+          <g transform="rotate(-8 28 50)">
+            <rect x={20} y={36} width={16} height={36} rx="2" fill="#000" />
+            <circle cx={28} cy={36} r={9} fill="#000" />
+            {/* Tiny lens reflection */}
+            <circle cx={28} cy={36} r={3} fill="rgba(160, 200, 255, 0.8)" />
+            <circle cx={26.5} cy={34.5} r={1.2} fill="#fff" opacity="0.85" />
+          </g>
+          {/* Vertical pole */}
+          <rect x={26} y={70} width={4} height={32} fill="#000" />
+          {/* Tripod legs spreading out */}
+          <line x1={28} y1={102} x2={6} y2={128} stroke="#000" strokeWidth={2.5} />
+          <line x1={28} y1={102} x2={50} y2={128} stroke="#000" strokeWidth={2.5} />
+          <line x1={28} y1={102} x2={28} y2={128} stroke="#000" strokeWidth={2.5} />
+          {/* Foot caps */}
+          <circle cx={6} cy={128} r={1.5} fill="#000" />
+          <circle cx={50} cy={128} r={1.5} fill="#000" />
+          <circle cx={28} cy={128} r={1.5} fill="#000" />
+        </svg>
+      </div>
+
+      {/* Atmospheric haze in the middle distance — soft warm glow
+          that the moon's light is "scattering through" */}
+      <AtmosphericHaze
+        color="rgba(120, 140, 220, 0.4)"
+        opacity={0.4 + dolly * 0.3}
+        cx="50%"
+        cy="46%"
+        radius={36}
+        z={2}
+        drift
+      />
+
+      {/* Bloom growing toward end — the central core brightens,
+          eventually flashing into Shot 7 */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(ellipse at 50% 44%, rgba(220, 235, 255, 0.6) 0%, rgba(160, 200, 255, 0.25) 25%, transparent 55%)",
+          opacity: bloomBoost,
+          mixBlendMode: "screen",
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* Final-stretch bloom punch — only the last 30% of shot,
+          ramps the bloom into the white-flash transition */}
+      {dolly > 0.7 && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(255, 255, 255, 0.6)",
+            opacity: ((dolly - 0.7) / 0.3) * 0.5,
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
+      <FilmGrain opacity={0.05} />
     </div>
   );
 }
@@ -1191,75 +1659,417 @@ function Shot13CrackedPorthole({ shotProgress }: ShotContext) {
 
 // ---- Shot 14 · girl looking up, zoom-out-and-up -----------------
 function Shot14GirlLookingUp({ shotProgress }: ShotContext) {
-  // Camera zooms out AND moves up (Y rises). Sky reveals.
-  const zoom = 1.4 - shotProgress * 0.55;
-  const yShift = -shotProgress * 12; // percent
+  // Composition is a low-angle observatory shot: a planetarium
+  // DOME centered with a tiny girl silhouette on top of it,
+  // lamppost foreground-right, distant cityscape silhouette
+  // behind the dome, stars above, pink gameplay markers along
+  // the foreground railing. Camera dolly-zooms (zoom out + rise),
+  // so foreground elements parallax DOWN-and-OUT while the dome
+  // and sky reveal. Five depth layers, each translating at a
+  // different rate.
+
+  // Eased dolly progress with cubic-bezier-like ease-in-out
+  const t = shotProgress;
+  const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+  // Layer translations (% of viewport) per parallax depth
+  const skyShift = -eased * 3;        // distant — barely moves
+  const cityShift = -eased * 6;       // far — small move
+  const domeShift = -eased * 11;      // mid — medium move
+  const lamppostShift = -eased * 18;  // foreground — biggest move
+  const railShift = -eased * 22;      // immediate foreground — most
+
+  // Zoom out — foreground scales down faster than background
+  const fgZoom = 1.25 - eased * 0.35; // 1.25 → 0.9
+  const midZoom = 1.15 - eased * 0.2; // 1.15 → 0.95
+  const bgZoom = 1.05 - eased * 0.05; // 1.05 → 1.0
+
+  // Soft star twinkle — different phase per index
+  const twinkle = (i: number) =>
+    0.45 + 0.45 * Math.abs(Math.sin(t * 3 + i * 0.7));
+
   return (
     <div
       style={{
         position: "absolute",
         inset: 0,
         background:
-          "linear-gradient(180deg, #2a1838 0%, #1a0a30 30%, #0a0418 100%)",
+          // Twilight gradient — deep navy top → magenta band → dusky horizon
+          `linear-gradient(180deg,
+            #0a0820 0%,
+            #1a1240 25%,
+            #2a1450 55%,
+            #3a1845 75%,
+            #2a1438 90%,
+            #1a0a28 100%)`,
         overflow: "hidden",
       }}
     >
-      {/* Sky stars */}
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
-        {Array.from({ length: 60 }, (_, i) => {
-          // Pseudo-random star positions
-          const x = (i * 31) % 100;
-          const y = (i * 17 + 7) % 60;
-          const r = 0.3 + ((i * 13) % 10) / 30;
-          return <circle key={i} cx={x} cy={y} r={r} fill="#fff" opacity={0.6 + ((i * 7) % 4) / 10} />;
-        })}
-      </svg>
-      {/* Crescent moon, drifts up as camera rises */}
+      {/* LAYER 1 (deepest): SKY STARS — drift slowly up as
+          camera rises. Each star is a real sparkle: dot + cross. */}
       <div
         style={{
           position: "absolute",
-          left: "40%",
-          top: `${20 + yShift * 2}%`,
-          width: 60,
-          height: 60,
-          borderRadius: "50%",
-          background: "transparent",
-          boxShadow: "inset -22px 0 0 0 #f0e8c0",
-          transform: `scale(${zoom})`,
+          inset: 0,
+          transform: `translateY(${skyShift}%) scale(${bgZoom})`,
+          transformOrigin: "50% 30%",
+          transition: "none",
+        }}
+      >
+        <svg
+          viewBox="0 0 100 60"
+          preserveAspectRatio="none"
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "55%",
+          }}
+        >
+          {[
+            { x: 8, y: 8, s: 0.5 },
+            { x: 14, y: 18, s: 0.35 },
+            { x: 23, y: 5, s: 0.6 },
+            { x: 32, y: 14, s: 0.4 },
+            { x: 38, y: 22, s: 0.3 },
+            { x: 47, y: 9, s: 0.55 },
+            { x: 55, y: 18, s: 0.4 },
+            { x: 62, y: 6, s: 0.45 },
+            { x: 70, y: 14, s: 0.5 },
+            { x: 78, y: 7, s: 0.4 },
+            { x: 84, y: 20, s: 0.3 },
+            { x: 90, y: 12, s: 0.55 },
+            { x: 96, y: 22, s: 0.35 },
+            { x: 17, y: 30, s: 0.3 },
+            { x: 41, y: 35, s: 0.35 },
+            { x: 73, y: 32, s: 0.3 },
+          ].map((s, i) => (
+            <g key={i} opacity={twinkle(i)}>
+              {/* Halo */}
+              <circle cx={s.x} cy={s.y} r={s.s * 1.6} fill="#fff8e0" opacity={0.2} />
+              {/* Body */}
+              <circle cx={s.x} cy={s.y} r={s.s * 0.5} fill="#fff" />
+              {/* Cross */}
+              <line x1={s.x - s.s * 1.5} y1={s.y} x2={s.x + s.s * 1.5} y2={s.y} stroke="#fff" strokeWidth={0.06} opacity={0.5} />
+              <line x1={s.x} y1={s.y - s.s * 1.5} x2={s.x} y2={s.y + s.s * 1.5} stroke="#fff" strokeWidth={0.06} opacity={0.5} />
+            </g>
+          ))}
+        </svg>
+      </div>
+
+      {/* LAYER 2: ATMOSPHERIC HORIZON HAZE — a wide warm pink
+          band sitting at the horizon line, fading up + down */}
+      <div
+        style={{
+          position: "absolute",
+          left: "-5%",
+          right: "-5%",
+          top: `${52 + skyShift * 0.5}%`,
+          height: "26%",
+          background:
+            "radial-gradient(ellipse 80% 100% at 50% 50%, rgba(220, 130, 160, 0.38) 0%, rgba(160, 70, 110, 0.18) 50%, transparent 80%)",
+          mixBlendMode: "screen",
+          pointerEvents: "none",
+          filter: "blur(6px)",
         }}
       />
-      {/* Cityscape silhouette at the bottom */}
+
+      {/* LAYER 3: DISTANT CITYSCAPE silhouette behind the dome,
+          very subtle, low contrast. Built as a single SVG with
+          irregular building tops. */}
+      <svg
+        viewBox="0 0 100 30"
+        preserveAspectRatio="none"
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: `${58 + cityShift}%`,
+          width: "100%",
+          height: "12%",
+          opacity: 0.55,
+          transform: `scale(${midZoom})`,
+          transformOrigin: "50% 50%",
+        }}
+      >
+        <defs>
+          <linearGradient id="city14" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#1a0d28" />
+            <stop offset="100%" stopColor="#08041a" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M 0,30 L 0,18 L 4,18 L 4,12 L 8,12 L 8,8 L 12,8 L 12,16 L 16,16 L 16,5 L 18,5 L 18,16 L 22,16 L 22,10 L 26,10 L 26,18 L 30,18 L 30,14 L 34,14 L 34,9 L 38,9 L 38,16 L 42,16 L 42,7 L 44,7 L 44,16 L 48,16 L 48,11 L 52,11 L 52,16 L 56,16 L 56,8 L 58,8 L 58,16 L 62,16 L 62,10 L 66,10 L 66,15 L 70,15 L 70,9 L 74,9 L 74,17 L 78,17 L 78,12 L 82,12 L 82,16 L 86,16 L 86,8 L 90,8 L 90,15 L 94,15 L 94,12 L 100,12 L 100,30 Z"
+          fill="url(#city14)"
+        />
+        {/* A few warm window lights scattered */}
+        {[
+          { x: 6, y: 14 },
+          { x: 14, y: 10 },
+          { x: 32, y: 16 },
+          { x: 50, y: 13 },
+          { x: 68, y: 12 },
+          { x: 84, y: 14 },
+        ].map((w, i) => (
+          <rect key={i} x={w.x} y={w.y} width={0.4} height={0.4} fill="#ffb060" opacity={0.7 * (0.5 + 0.5 * Math.sin(t * 2 + i))} />
+        ))}
+      </svg>
+
+      {/* LAYER 4: THE DOME — main subject. Dark hemisphere with
+          a bright yellow rim glow at the top. Lampposts /
+          structures attached at the base. */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: `${56 + domeShift}%`,
+          transform: `translateX(-50%) scale(${midZoom})`,
+          transformOrigin: "50% 100%",
+          width: 460,
+          height: 280,
+          marginLeft: -230,
+          maxWidth: "60%",
+          aspectRatio: "460/280",
+        }}
+      >
+        <svg viewBox="0 0 460 280" preserveAspectRatio="xMidYMax meet" style={{ width: "100%", height: "100%", overflow: "visible" }}>
+          <defs>
+            {/* Dome shading: top-bright, bottom-dark hemisphere */}
+            <radialGradient id="dome-shade" cx="50%" cy="50%" r="60%">
+              <stop offset="0%" stopColor="#3a3050" />
+              <stop offset="40%" stopColor="#221a3a" />
+              <stop offset="100%" stopColor="#0a0820" />
+            </radialGradient>
+            {/* Top rim glow — warm yellow */}
+            <radialGradient id="dome-rim" cx="50%" cy="0%" r="40%">
+              <stop offset="0%" stopColor="#ffd070" stopOpacity="0.95" />
+              <stop offset="60%" stopColor="#ff9050" stopOpacity="0.4" />
+              <stop offset="100%" stopColor="#ff9050" stopOpacity="0" />
+            </radialGradient>
+            {/* Glass observation slit — faint cyan rectangle */}
+            <linearGradient id="dome-slit" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#406090" stopOpacity="0.6" />
+              <stop offset="100%" stopColor="#1a3050" stopOpacity="0.4" />
+            </linearGradient>
+          </defs>
+
+          {/* Outer rim glow — drawn first so dome covers most of
+              it but the top corona shows */}
+          <ellipse cx="230" cy="100" rx="280" ry="100" fill="url(#dome-rim)" opacity="0.7" />
+
+          {/* Dome hemisphere */}
+          <path
+            d="M 30,200 Q 30,40 230,40 Q 430,40 430,200 L 30,200 Z"
+            fill="url(#dome-shade)"
+            stroke="rgba(120,100,160,0.4)"
+            strokeWidth="1"
+          />
+
+          {/* Dome paneling — subtle radial stripes for surface */}
+          {Array.from({ length: 9 }, (_, i) => {
+            const a = (i / 8) * Math.PI;
+            const x1 = 230 + Math.cos(Math.PI - a) * 200;
+            const y1 = 200 - Math.sin(a) * 158;
+            return (
+              <line
+                key={i}
+                x1={230}
+                y1={200}
+                x2={x1}
+                y2={y1}
+                stroke="rgba(140, 120, 180, 0.15)"
+                strokeWidth="0.7"
+              />
+            );
+          })}
+
+          {/* Observation slit — angled vertical strip on the
+              dome, where the telescope would emerge */}
+          <path
+            d="M 222,40 L 238,40 L 240,160 L 220,160 Z"
+            fill="url(#dome-slit)"
+            stroke="rgba(160, 200, 255, 0.5)"
+            strokeWidth="0.8"
+          />
+
+          {/* Foundation strip */}
+          <rect x="20" y="200" width="420" height="20" fill="#0a0418" />
+          <rect x="20" y="200" width="420" height="2" fill="rgba(180, 150, 200, 0.3)" />
+
+          {/* Stairs at front */}
+          <path d="M 180,220 L 280,220 L 290,260 L 170,260 Z" fill="#0a0418" stroke="rgba(120, 100, 160, 0.25)" strokeWidth="0.5" />
+          <line x1="175" y1="240" x2="285" y2="240" stroke="rgba(140, 120, 180, 0.2)" strokeWidth="0.6" />
+
+          {/* THE GIRL — tiny silhouette on top of the dome,
+              looking up. Small enough that she's a detail, not
+              the focal point. */}
+          <g transform="translate(220, 36)">
+            {/* Hair flowing behind */}
+            <path d="M 6,4 Q -2,18 4,30 L 10,30 Q 12,16 10,4 Z" fill="#000" />
+            {/* Body */}
+            <path d="M 4,8 Q 2,22 6,32 L 14,32 Q 18,22 16,8 Z" fill="#000" />
+            {/* Head, tilted up — slightly off-axis to suggest
+                the gaze direction (up + slightly right) */}
+            <ellipse cx="10" cy="6" rx="4" ry="4.5" fill="#000" />
+          </g>
+        </svg>
+      </div>
+
+      {/* LAYER 5: PINK GAMEPLAY MARKERS — circular pink rings
+          along the railing, glowing.  These are the "gameplay
+          objects" from the source frame; they sit at the
+          horizon line in the foreground. */}
       <div
         style={{
           position: "absolute",
           left: 0,
           right: 0,
-          bottom: `${yShift}%`,
-          height: "32%",
-          background: "#000",
-          clipPath:
-            "polygon(0 100%, 0 60%, 8% 40%, 12% 60%, 18% 30%, 24% 60%, 30% 50%, 38% 70%, 46% 40%, 52% 60%, 60% 50%, 68% 65%, 76% 35%, 82% 60%, 90% 45%, 100% 60%, 100% 100%)",
-        }}
-      />
-      {/* Girl silhouette looking up — small in the lower-third */}
-      <div
-        style={{
-          position: "absolute",
-          left: "48%",
-          bottom: `${10 + yShift}%`,
-          width: 60,
-          height: 90,
-          transform: `scale(${zoom})`,
+          bottom: `${10 - railShift}%`,
+          height: 24,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 8%",
+          transform: `scale(${fgZoom})`,
           transformOrigin: "50% 100%",
         }}
       >
-        <svg viewBox="0 0 60 90" style={{ width: "100%", height: "100%" }}>
-          {/* Head, tilted up */}
-          <ellipse cx={30} cy={18} rx={11} ry={13} fill="#000" />
-          {/* Long hair flowing back */}
-          <path d="M 22,26 Q 8,55 18,86 L 42,86 Q 52,55 38,26 Z" fill="#000" />
-        </svg>
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: "50%",
+              border: "2px solid #ff60a0",
+              boxShadow:
+                "0 0 14px rgba(255, 96, 160, 0.8), inset 0 0 6px rgba(255, 96, 160, 0.5)",
+              opacity: 0.85,
+              animation: `ap-orb-flicker ${5 + i * 0.4}s ease-in-out infinite`,
+            }}
+          />
+        ))}
       </div>
+
+      {/* LAYER 6: LAMPPOST in the foreground-right —
+          parallaxes the most. Old-fashioned wrought-iron-style. */}
+      <div
+        style={{
+          position: "absolute",
+          right: "16%",
+          bottom: `${5 - lamppostShift * 0.8}%`,
+          width: 72,
+          height: 320,
+          transform: `scale(${fgZoom})`,
+          transformOrigin: "50% 100%",
+          zIndex: 4,
+        }}
+      >
+        <svg viewBox="0 0 72 320" style={{ width: "100%", height: "100%", overflow: "visible" }}>
+          {/* Pole */}
+          <rect x="34" y="80" width="4" height="240" fill="#000" />
+          {/* Decorative top scrolls */}
+          <path
+            d="M 36,80 Q 36,72 40,68 Q 44,64 48,68 Q 52,72 50,80 Z"
+            fill="#000"
+          />
+          <path
+            d="M 36,80 Q 36,72 32,68 Q 28,64 24,68 Q 20,72 22,80 Z"
+            fill="#000"
+          />
+          {/* Lamp head — square cage with glass */}
+          <path d="M 24,40 L 48,40 L 52,75 L 20,75 Z" fill="#0a0610" stroke="#000" strokeWidth="1" />
+          {/* Glass — warm glow */}
+          <path d="M 27,46 L 45,46 L 48,72 L 24,72 Z" fill="rgba(255, 200, 130, 0.85)" />
+          <path d="M 27,46 L 45,46 L 48,72 L 24,72 Z" fill="url(#lamp-glass-grad)" opacity="0.9" />
+          <defs>
+            <radialGradient id="lamp-glass-grad" cx="50%" cy="50%">
+              <stop offset="0%" stopColor="#fff8d8" stopOpacity="1" />
+              <stop offset="60%" stopColor="#ffb060" stopOpacity="0.8" />
+              <stop offset="100%" stopColor="#cc6020" stopOpacity="0.7" />
+            </radialGradient>
+          </defs>
+          {/* Lamp dome cap */}
+          <path d="M 24,40 L 48,40 L 44,28 L 28,28 Z" fill="#000" />
+          <circle cx="36" cy="24" r="3" fill="#000" />
+
+          {/* Light cone falling forward — soft warm cone, screen
+              blend for additive light feel. Drawn outside the
+              SVG via a sibling div below since SVG can't easily
+              do the long fade we want without filters. */}
+
+          {/* Crossbar with two hanging pieces */}
+          <line x1="20" y1="105" x2="52" y2="105" stroke="#000" strokeWidth="2" />
+          <circle cx="20" cy="108" r="3" fill="#000" />
+          <circle cx="52" cy="108" r="3" fill="#000" />
+        </svg>
+        {/* Soft warm cone falling FROM the lamp downward */}
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: 50,
+            width: 220,
+            height: 180,
+            marginLeft: -110,
+            background:
+              "radial-gradient(ellipse at 50% 0%, rgba(255, 200, 130, 0.4) 0%, rgba(255, 160, 80, 0.18) 30%, transparent 60%)",
+            mixBlendMode: "screen",
+            pointerEvents: "none",
+            filter: "blur(2px)",
+          }}
+        />
+      </div>
+
+      {/* LAYER 7: Foreground railing strip — thin horizontal
+          line + balusters near the bottom edge */}
+      <svg
+        viewBox="0 0 100 8"
+        preserveAspectRatio="none"
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: `${railShift * -1 + 2}%`,
+          width: "100%",
+          height: "5%",
+          transform: `scale(${fgZoom})`,
+          transformOrigin: "50% 100%",
+          zIndex: 5,
+        }}
+      >
+        {/* Top rail */}
+        <line x1="0" y1="2" x2="100" y2="2" stroke="#000" strokeWidth="0.4" />
+        {/* Balusters */}
+        {Array.from({ length: 32 }, (_, i) => (
+          <line
+            key={i}
+            x1={i * 3.2}
+            y1="2"
+            x2={i * 3.2}
+            y2="8"
+            stroke="#000"
+            strokeWidth="0.18"
+            opacity="0.8"
+          />
+        ))}
+        {/* Bottom rail */}
+        <line x1="0" y1="7" x2="100" y2="7" stroke="#000" strokeWidth="0.3" />
+      </svg>
+
+      {/* OVERALL film grain + subtle vignette */}
+      <FilmGrain opacity={0.05} />
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(ellipse at 50% 60%, transparent 50%, rgba(0,0,0,0.5) 100%)",
+          pointerEvents: "none",
+          zIndex: 49,
+        }}
+      />
     </div>
   );
 }
@@ -2047,6 +2857,11 @@ export function ApertureOverlay({
         overflow: "hidden",
       }}
     >
+      {/* Shared SVG filter defs + keyframes. Mount once at the
+          top of the overlay so every shot can reference them by id. */}
+      <ApertureFilters />
+      <ApertureKeyframes />
+
       {/* Render the active shot. Radar gets the special hold props. */}
       {isOnRadar ? (
         <Shot23Radar
