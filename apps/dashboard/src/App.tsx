@@ -1,8 +1,20 @@
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { useKeepAlive } from "./lib/useKeepAlive";
 import { ThemeProvider } from "./lib/theme";
+
+// Localhost-only preview shell for the Aperture overlay. The lazy
+// import is constructed only in dev — Vite tree-shakes the entire
+// branch from prod builds because import.meta.env.DEV is replaced
+// with the literal `false`, which collapses the conditional.
+const ApertureOverlayPreview = import.meta.env.DEV
+  ? lazy(() =>
+      import("./components/ApertureOverlayPreview").then((m) => ({
+        default: m.ApertureOverlayPreview,
+      })),
+    )
+  : null;
 import { Shell } from "./components/Shell";
 import { PreviewLandingPage } from "./pages/PreviewLandingPage";
 import { PreviewSignInPage } from "./pages/PreviewSignInPage";
@@ -95,6 +107,24 @@ const APP_ROUTES: Array<{ path: string; element: React.ReactNode }> = [
 ];
 
 export function App() {
+  // ?preview=overlay — localhost-only preview shell for the Aperture
+  // overlay. Short-circuits the entire app so I can iterate on the
+  // overlay visuals without going through the connect-disconnect
+  // cycle. Gated by import.meta.env.DEV so this code path is dead
+  // in production builds — Vite tree-shakes the lazy import out.
+  if (
+    import.meta.env.DEV &&
+    ApertureOverlayPreview &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("preview") === "overlay"
+  ) {
+    return (
+      <Suspense fallback={null}>
+        <ApertureOverlayPreview />
+      </Suspense>
+    );
+  }
+
   // Wake Render the moment the app mounts, regardless of auth state.
   // The first authenticated query after a cold-start hits a 3-5s
   // delay otherwise — by the time the user types their password the
